@@ -61,7 +61,7 @@ Use separate values; never copy `body` into `shortCriticalText` just because And
 | Bus planned | Bus number (without `번`) + destination | Arrival + paired vehicle ETA/stop count | Same as short line |
 | Bus on board | Bus number + destination | Stops remaining + current + next stop | Same as short line |
 | Subway planned | Next station + terminal direction | Arrival information | Same as short line |
-| Subway on board | Destination time + destination station | Stops remaining/current/next + exit door | Stops remaining/current/next, no exit door |
+| Subway on board | Destination time + destination station | Stops remaining/current/next; append the exit door **only at the destination** | Stops remaining/current/next, no exit door |
 | KTX planned | Train identifier + departure time | Platform + car + seat | Same as short line |
 | KTX on board | Arrival time + destination | Remaining route positions + current + next | Same as short line |
 

@@ -124,8 +124,12 @@ internal object TransitNotificationFactory {
                 val destination = leg.destination.removeSuffix("역")
                 val title = "${KtxScheduleResolver.displayClock(arrival)} $destination".trim()
                 val direction = if (progress.journeyId == JourneyId.COMMUTE) "왼쪽" else "오른쪽"
-                val lower = "${remaining}개/$current/$next"
-                TransitNotificationText(title, "$lower/$direction", lower, stopIndex, stops.size.coerceAtLeast(1), false)
+                val lower = if (remaining == 0) "${remaining}개/$current" else "${remaining}개/$current/$next"
+                // The door side is actionable only on arrival.  Showing it at
+                // every intermediate station makes the compact Now Bar noisy
+                // and falsely suggests that the user should alight now.
+                val short = if (remaining == 0) "$lower/$direction" else lower
+                TransitNotificationText(title, short, lower, stopIndex, stops.size.coerceAtLeast(1), false)
             }
             TransportKind.KTX -> {
                 val depart = KtxScheduleResolver.departureEpochMillis(
