@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">출퇴근 이동도우미</string>
+    <string name="notification_channel_transit">대중교통 이동 알림</string>
+    <string name="notification_channel_diagnostics">이동 진단 기록</string>
+</resources>

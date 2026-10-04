@@ -1,0 +1,16 @@
+# Android/Gradle generated files and local build state
+.gradle/
+.gradle-user/
+.kotlin/
+.work/
+**/build/
+local.properties
+
+# Local signing material
+*.jks
+*.keystore
+
+# Editor and OS files
+.idea/
+*.iml
+Thumbs.db
