@@ -80,6 +80,18 @@ class JourneyReducerTest {
     }
 
     @Test
+    fun busPreArrivalAlertsArePersistedAsOneShotMarkers() {
+        var state = applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.COMMUTE, 1_000L))
+        state = applied(JourneyReducer.autoBoard(state, 2_000L))
+        assertEquals(-1, state.activeProgress()?.stopIndex)
+        state = applied(JourneyReducer.markBusPreArrivalAlert(state, 2, 3_000L))
+        assertTrue(state.activeProgress()?.busTwoStopAlertSent == true)
+        assertTrue(JourneyReducer.markBusPreArrivalAlert(state, 2, 4_000L) is TransitionResult.Rejected)
+        state = applied(JourneyReducer.markBusPreArrivalAlert(state, 1, 5_000L))
+        assertTrue(state.activeProgress()?.busOneStopAlertSent == true)
+    }
+
+    @Test
     fun commuteStartedYesterdayResetsButTripCrossingWithinSameDateDoesNot() {
         val zone = ZoneId.systemDefault()
         val startedYesterday = LocalDateTime.of(2026, 10, 4, 23, 55).atZone(zone).toInstant().toEpochMilli()

@@ -80,6 +80,10 @@ class TravelRepository private constructor(context: Context) {
         JourneyReducer.updateStopIndex(it, index, nowEpochMillis)
     }
 
+    fun markBusPreArrivalAlert(threshold: Int, nowEpochMillis: Long): TransitionResult = update {
+        JourneyReducer.markBusPreArrivalAlert(it, threshold, nowEpochMillis)
+    }
+
     fun autoAlight(nowEpochMillis: Long): TransitionResult =
         update { JourneyReducer.autoAlight(it, nowEpochMillis) }
 
@@ -184,6 +188,8 @@ class TravelRepository private constructor(context: Context) {
                 .put("journey_started_at", progress.journeyStartedAtEpochMillis ?: JSONObject.NULL)
                 .put("arrival_fetched_at", progress.arrivalFetchedAtEpochMillis ?: JSONObject.NULL)
                 .put("planned_subway_text", progress.plannedSubwayText)
+                .put("bus_two_stop_alert_sent", progress.busTwoStopAlertSent)
+                .put("bus_one_stop_alert_sent", progress.busOneStopAlertSent)
             val arrivals = JSONArray()
             progress.arrivalVehicles.forEach { item ->
                 arrivals.put(JSONObject()
@@ -253,14 +259,16 @@ class TravelRepository private constructor(context: Context) {
                 journeyId = journeyId,
                 legIndex = row.optInt("leg_index", 0).coerceAtLeast(0),
                 phase = phase,
-                stopIndex = row.optInt("stop_index", 0).coerceAtLeast(0),
+                stopIndex = row.optInt("stop_index", 0).coerceAtLeast(-1),
                 plannedAtEpochMillis = row.nullableLong("planned_at"),
                 boardedAtEpochMillis = row.nullableLong("boarded_at"),
                 journeyStartedAtEpochMillis = row.nullableLong("journey_started_at"),
                 selectedSubwayTrip = trip,
                 arrivalVehicles = arrivals,
                 arrivalFetchedAtEpochMillis = row.nullableLong("arrival_fetched_at"),
-                plannedSubwayText = row.optString("planned_subway_text")
+                plannedSubwayText = row.optString("planned_subway_text"),
+                busTwoStopAlertSent = row.optBoolean("bus_two_stop_alert_sent", false),
+                busOneStopAlertSent = row.optBoolean("bus_one_stop_alert_sent", false)
             )
         }
         val schedules = mutableMapOf<JourneyId, KtxSchedule>()

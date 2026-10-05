@@ -1,6 +1,7 @@
 package com.cobra.dev1new.domain
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -40,6 +41,20 @@ class RouteGeometryTest {
         val shortProjection = RouteGeometry.project(route, shortFix.latitude, shortFix.longitude)!!
 
         assertFalse(TransitGpsRules.confirmsBusBoarding(probe, shortFix, shortProjection))
+    }
+
+    @Test
+    fun busStopDoesNotAdvanceUntilFiftyMetresAfterTheStop() {
+        val points = listOf(
+            GeoPoint(36.0, 127.0),
+            GeoPoint(36.0, 127.001),
+            GeoPoint(36.0, 127.002)
+        )
+        val justAfterOrigin = RouteGeometry.project(points, 36.0, 127.0002)!!
+        val fiftyMetresAfterOrigin = RouteGeometry.project(points, 36.0, 127.0006)!!
+
+        assertEquals(-1, TransitGpsRules.confirmedBusPassedStopIndex(points, justAfterOrigin))
+        assertEquals(0, TransitGpsRules.confirmedBusPassedStopIndex(points, fiftyMetresAfterOrigin))
     }
 
     @Test

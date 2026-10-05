@@ -84,6 +84,30 @@ object TransitGpsRules {
     private const val BUS_MIN_PHYSICAL_METERS = 30.0
     private const val BUS_MIN_SPEED_KMH = 10.0f
     private const val BUS_DESTINATION_RADIUS_METERS = 140.0
+    const val BUS_POST_STOP_ADVANCE_METERS = 50.0
+
+    /**
+     * A bus stop is considered passed only after the route projection is 50m
+     * beyond it.  The returned value is the last confirmed-passed stop, so
+     * -1 keeps the boarding/origin stop visible before the first 50m.
+     */
+    fun confirmedBusPassedStopIndex(
+        points: List<GeoPoint>,
+        projection: RouteProjection
+    ): Int {
+        if (points.size < 2) return -1
+        val segment = projection.segmentIndex.coerceIn(0, points.lastIndex - 1)
+        val segmentLength = RouteGeometry.distance(
+            points[segment].latitude, points[segment].longitude,
+            points[segment + 1].latitude, points[segment + 1].longitude
+        )
+        val passed = if (segmentLength * projection.fraction >= BUS_POST_STOP_ADVANCE_METERS) {
+            segment
+        } else {
+            segment - 1
+        }
+        return passed.coerceIn(-1, points.lastIndex - 1)
+    }
 
     fun canStartBusProbe(fix: GeoFix, projection: RouteProjection): Boolean =
         fix.accuracyMeters != null && fix.accuracyMeters <= BUS_MAX_ACCURACY_METERS &&

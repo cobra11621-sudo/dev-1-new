@@ -33,7 +33,9 @@ data class LegProgress(
     val selectedSubwayTrip: SubwayTripSelection? = null,
     val arrivalVehicles: List<VehicleArrival> = emptyList(),
     val arrivalFetchedAtEpochMillis: Long? = null,
-    val plannedSubwayText: String = ""
+    val plannedSubwayText: String = "",
+    val busTwoStopAlertSent: Boolean = false,
+    val busOneStopAlertSent: Boolean = false
 )
 
 data class TravelSnapshot(
@@ -156,9 +158,13 @@ object JourneyReducer {
         val updated = current.journeys.toMutableMap()
         updated[progress.journeyId] = progress.copy(
             phase = LegPhase.ONBOARD,
-            stopIndex = 0,
+            // Bus progress stores the last confirmed-passed stop.  -1 keeps
+            // the boarding/origin stop visible until the first 50m.
+            stopIndex = if (RouteCatalog.journey(progress.journeyId).legs[progress.legIndex].kind == TransportKind.BUS) -1 else 0,
             boardedAtEpochMillis = nowEpochMillis,
-            selectedSubwayTrip = subwayTrip
+            selectedSubwayTrip = subwayTrip,
+            busTwoStopAlertSent = false,
+            busOneStopAlertSent = false
         )
         return TransitionResult.Applied(
             current.copy(
@@ -194,6 +200,36 @@ object JourneyReducer {
                 lastTransition = "progress_updated"
             )
         )
+    }
+
+    /** Mark one bus pre-arrival threshold atomically so service restarts cannot repeat it. */
+    fun markBusPreArrivalAlert(
+        current: TravelSnapshot,
+        threshold: Int,
+        nowEpochMillis: Long
+    ): TransitionResult {
+        val progress = current.activeProgress()
+            ?: return TransitionResult.Rejected(current, "활성 여정이 없습니다.")
+        val leg = RouteCatalog.journey(progress.journeyId).legs[progress.legIndex]
+        if (progress.phase != LegPhase.ONBOARD || leg.kind != TransportKind.BUS) {
+            return TransitionResult.Rejected(current, "버스 탑승 중이 아닙니다.")
+        }
+        val alreadySent = when (threshold) {
+            2 -> progress.busTwoStopAlertSent
+            1 -> progress.busOneStopAlertSent
+            else -> return TransitionResult.Rejected(current, "지원하지 않는 알림 기준입니다.")
+        }
+        if (alreadySent) return TransitionResult.Rejected(current, "이미 보낸 하차 전 알림입니다.")
+        val updated = current.journeys.toMutableMap()
+        updated[progress.journeyId] = when (threshold) {
+            2 -> progress.copy(busTwoStopAlertSent = true)
+            else -> progress.copy(busOneStopAlertSent = true)
+        }
+        return TransitionResult.Applied(current.copy(
+            journeys = updated,
+            updatedAtEpochMillis = nowEpochMillis,
+            lastTransition = "bus_${threshold}_stops_alerted"
+        ))
     }
 
     /** Automatic alighting and automatic next-plan creation happen atomically. */

@@ -59,7 +59,6 @@ class TransitTrackingService : Service() {
     private var busProbe: BusBoardingProbe? = null
     private var busDestinationFixCount = 0
     private var ktxDestinationFixCount = 0
-    private var lastPreArrivalAlertKey = ""
     private var lastBusFetchAt = 0L
     private var busFetchInFlight = false
     private var lastSubwayFetchAt = 0L
@@ -180,7 +179,6 @@ class TransitTrackingService : Service() {
         busProbe = null
         busDestinationFixCount = 0
         ktxDestinationFixCount = 0
-        lastPreArrivalAlertKey = ""
         if (!shouldTrack) {
             removeLocationUpdates()
             return
@@ -278,7 +276,8 @@ class TransitTrackingService : Service() {
         }
         if (progress.phase != LegPhase.ONBOARD) return
         if (progress.journeyId == com.cobra.dev1new.domain.JourneyId.RETURN && leg.id == "return_donggu4") {
-            val shortLegIndex = projection.stopIndex(leg.stops.size).coerceAtLeast(1)
+            val shortLegIndex = TransitGpsRules.confirmedBusPassedStopIndex(leg.routePoints, projection)
+                .coerceAtLeast(-1)
             if (shortLegIndex > progress.stopIndex) repository.updateStopIndex(shortLegIndex, now)
             val destination = leg.routePoints.lastOrNull() ?: return
             val ansimExit = com.cobra.dev1new.domain.GeoPoint(35.8724067, 128.7335650)
@@ -292,18 +291,18 @@ class TransitTrackingService : Service() {
         }
         val accuracy = fix.accuracyMeters ?: return
         if (accuracy > BUS_MAX_ACCURACY_METERS || projection.distanceMeters > BUS_ROUTE_CORRIDOR_METERS) return
-        val index = projection.stopIndex(leg.stops.size)
+        val index = TransitGpsRules.confirmedBusPassedStopIndex(leg.routePoints, projection)
         if (index > progress.stopIndex) repository.updateStopIndex(index, now)
-        val approachingDestination = leg.stops.isNotEmpty() &&
-            index >= leg.stops.lastIndex - 1 &&
-            projection.progressMeters >= projection.routeLengthMeters * 0.70
-        if (approachingDestination) {
-            val alertKey = "${progress.journeyId}:${leg.id}:before_destination"
-            if (lastPreArrivalAlertKey != alertKey) {
-                lastPreArrivalAlertKey = alertKey
-                postEvent("다음 정류장에서 하차", "${leg.destination} 도착이 가까워졌습니다")
-            }
-        }
+        val remaining = (leg.stops.lastIndex - index).coerceAtLeast(0)
+        // The two alerts are tied to exactly the same 50m-confirmed progress
+        // as the compact bus line.  Persisting each marker makes them one-shot
+        // even if Android recreates the foreground service.
+        if (leg.stops.size >= 4 && remaining == 2 &&
+            repository.markBusPreArrivalAlert(2, now) is com.cobra.dev1new.domain.TransitionResult.Applied
+        ) postEvent("하차 2정류장 전", "${leg.destination}까지 2정류장 남았습니다", 2)
+        if (leg.stops.size >= 4 && remaining == 1 &&
+            repository.markBusPreArrivalAlert(1, now) is com.cobra.dev1new.domain.TransitionResult.Applied
+        ) postEvent("하차 1정류장 전", "다음 정류장은 ${leg.destination}입니다", 1)
         val destination = leg.routePoints.lastOrNull() ?: return
         if (TransitGpsRules.isAccurateBusDestinationFix(fix, destination)) {
             busDestinationFixCount += 1
@@ -427,11 +426,11 @@ class TransitTrackingService : Service() {
             .notify(TransitNotificationFactory.NOTIFICATION_ID, notification)
     }
 
-    private fun postEvent(title: String, message: String) {
-        TransitNotificationFactory.postEvent(this, title, message)
+    private fun postEvent(title: String, message: String, eventId: Int = TransitNotificationFactory.EVENT_NOTIFICATION_ID) {
+        TransitNotificationFactory.postEvent(this, title, message, eventId)
         mainHandler.postDelayed({
             getSystemService(android.app.NotificationManager::class.java)
-                .cancel(TransitNotificationFactory.EVENT_NOTIFICATION_ID)
+                .cancel(eventId)
         }, EVENT_NOTIFICATION_DURATION_MS)
     }
 

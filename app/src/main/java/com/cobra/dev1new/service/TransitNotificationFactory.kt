@@ -72,7 +72,8 @@ internal object TransitNotificationFactory {
             ?: return TransitNotificationText("이동 정보", "경로 확인 필요", "경로 설정을 확인하세요", 0, 1, true)
         val schedule = snapshot.ktxSchedules[progress.journeyId]
         val stops = leg.stops
-        val stopIndex = progress.stopIndex.coerceIn(0, (stops.size - 1).coerceAtLeast(0))
+        val storedStopIndex = progress.stopIndex.coerceIn(-1, (stops.size - 1).coerceAtLeast(0))
+        val stopIndex = storedStopIndex.coerceAtLeast(0)
         val current = stops.getOrNull(stopIndex).orEmpty()
         val next = stops.getOrNull((stopIndex + 1).coerceAtMost((stops.size - 1).coerceAtLeast(0))).orEmpty()
         val remaining = (stops.lastIndex - stopIndex).coerceAtLeast(0)
@@ -115,8 +116,16 @@ internal object TransitNotificationFactory {
         return when (leg.kind) {
             TransportKind.BUS -> {
                 val line = "${busName(leg.routeNumber)}(${leg.destination})"
-                val details = "${remaining}개/현재:$current/다음:$next"
-                TransitNotificationText(line, details, details, stopIndex, stops.size.coerceAtLeast(1), false)
+                val passed = storedStopIndex.coerceIn(-1, (stops.lastIndex - 1).coerceAtLeast(-1))
+                val busCurrentIndex = (passed + 1).coerceIn(0, stops.lastIndex.coerceAtLeast(0))
+                val busCurrent = stops.getOrNull(busCurrentIndex).orEmpty()
+                val busNext = stops.getOrNull((busCurrentIndex + 1).coerceAtMost(stops.lastIndex.coerceAtLeast(0))).orEmpty()
+                val busRemaining = (stops.lastIndex - passed).coerceAtLeast(0)
+                val details = buildString {
+                    append("${busRemaining}개/$busCurrent")
+                    if (busNext.isNotBlank() && busNext != busCurrent) append("/$busNext")
+                }
+                TransitNotificationText(line, details, details, busCurrentIndex, stops.size.coerceAtLeast(1), false)
             }
             TransportKind.SUBWAY -> {
                 val train = progress.selectedSubwayTrip
@@ -202,7 +211,7 @@ internal object TransitNotificationFactory {
         return builder.build()
     }
 
-    fun postEvent(context: Context, title: String, message: String) {
+    fun postEvent(context: Context, title: String, message: String, notificationId: Int = EVENT_NOTIFICATION_ID) {
         createChannel(context)
         val manager = context.getSystemService(NotificationManager::class.java)
         val notification = Notification.Builder(context, ALERT_CHANNEL_ID)
@@ -214,7 +223,7 @@ internal object TransitNotificationFactory {
             .setAutoCancel(true)
             .setVibrate(longArrayOf(0, 700, 250, 700))
             .build()
-        manager.notify(EVENT_NOTIFICATION_ID, notification)
+        manager.notify(notificationId, notification)
     }
 
     private fun requestPromotedOngoing(builder: Notification.Builder) {

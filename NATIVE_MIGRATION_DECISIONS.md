@@ -99,3 +99,13 @@ Official references:
 2. Confirm Daejeon and Daegu source-field units against provider samples/guides before relying on final ETA labels.
 3. Migrate diagnostic event/sample writing, issue-history UI, and share/export controls.
 4. Actual Galaxy S26 acceptance testing: permissions, background location survival, battery restrictions, and Now Bar promotion.
+# 2026-10-05 버스 정류장 표시·하차 전 알림 결정
+
+- 버스 진행 상태는 GPS에 가장 가까운 정류장이 아니라 **마지막으로 확정 통과한
+  정류장**을 저장한다. 한 정류장을 지난 뒤 노선 진행 방향으로 50m 이상 이동해야
+  그 정류장을 통과한 것으로 확정한다.
+- Now Bar와 잠금화면의 버스 탑승 정보는 `남은개수/현재정류장/다음정류장`으로
+  표시한다. 여기서 남은 개수는 현재 정류장을 포함한다. 예를 들어 `aaa`를 50m
+  이상 지난 뒤에는 `5/bbb/ccc`를 표시한다.
+- 하차 2정거장 전과 1정거장 전 알림은 같은 50m 확정 단계에 연결한다. 각 기준은
+  저장된 상태에서 한 번만 처리하며, 진동은 `[0, 700, 250, 700]`으로 두 번이다.
