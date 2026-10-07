@@ -20,6 +20,21 @@ android {
         versionName = "0.1.0-native"
     }
 
+    signingConfigs {
+        create("workspaceDebug") {
+            storeFile = rootProject.file("../nodelete/android-signing/native-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("workspaceDebug")
+        }
+    }
+
     buildFeatures {
         compose = true
     }
