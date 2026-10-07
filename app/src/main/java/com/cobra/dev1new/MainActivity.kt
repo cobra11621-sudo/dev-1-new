@@ -15,7 +15,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,7 +25,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -47,6 +49,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -88,6 +91,35 @@ import kotlinx.coroutines.launch
 
 private val TransitCanvas = Color(0xFFF4F6FA)
 private val TransitIndigo = Color(0xFF3949AB)
+
+/**
+ * UI-only interpretation of the progress written by the location service.
+ *
+ * Bus progress stores the last confirmed-passed stop, while subway and KTX
+ * progress store the current stop.  This preserves the service's canonical
+ * state and merely makes the current stop readable in the app card.
+ */
+internal data class OnboardStopDisplay(
+    val currentIndex: Int,
+    val nextIndex: Int,
+    val remainingStops: Int
+)
+
+internal fun onboardStopDisplay(leg: com.cobra.dev1new.domain.TransportLeg, storedStopIndex: Int): OnboardStopDisplay? {
+    if (leg.stops.isEmpty()) return null
+    val lastIndex = leg.stops.lastIndex
+    val currentIndex = when (leg.kind) {
+        TransportKind.BUS -> (storedStopIndex + 1).coerceIn(0, lastIndex)
+        else -> storedStopIndex.coerceIn(0, lastIndex)
+    }
+    val nextIndex = (currentIndex + 1).coerceAtMost(lastIndex)
+    val remainingStops = when (leg.kind) {
+        TransportKind.BUS -> (lastIndex - storedStopIndex).coerceAtLeast(0)
+        else -> (lastIndex - currentIndex).coerceAtLeast(0)
+    }
+    return OnboardStopDisplay(currentIndex, nextIndex, remainingStops)
+}
+
 private val TransitColors = lightColorScheme(
     primary = TransitIndigo,
     onPrimary = Color.White,
@@ -497,18 +529,14 @@ private fun RouteCard(
                         }
                     }
                     Text("${leg.origin}  →  ${leg.destination}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Row(
-                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        leg.stops.forEachIndexed { stopIndex, stop ->
-                            if (stopIndex > 0) Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
-                            Surface(color = Color.White.copy(alpha = 0.78f), shape = RoundedCornerShape(50)) {
-                                Text(stop, Modifier.padding(horizontal = 9.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                            }
+                    StopProgressRow(
+                        leg = leg,
+                        onboardDisplay = if (isCurrent && phase == LegPhase.ONBOARD) {
+                            onboardStopDisplay(leg, progress.stopIndex)
+                        } else {
+                            null
                         }
-                    }
+                    )
                     if (isCurrent && phase == LegPhase.PLANNED) {
                         Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.9f))) {
                             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -541,7 +569,20 @@ private fun RouteCard(
                                             color = MaterialTheme.colorScheme.error
                                         )
                                         Text(progress.plannedSubwayText.ifBlank { "지하철 전체 시간표 확인 중" }, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                                        if (journey.id == JourneyId.COMMUTE) Text("빠른 환승 위치: 6-4", style = MaterialTheme.typography.bodySmall, color = TransitIndigo)
+                                        RouteCatalog.subwayQuickTransferPosition(journey.id)?.let { position ->
+                                            Surface(
+                                                color = Color(0xFFFFE2B8),
+                                                shape = RoundedCornerShape(10.dp)
+                                            ) {
+                                                Text(
+                                                    "빠른 환승 · $position",
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    color = Color(0xFF744200),
+                                                    fontWeight = FontWeight.ExtraBold
+                                                )
+                                            }
+                                        }
                                         Text("탑승 버튼을 누르면 가장 가까운 전체 시간표 열차를 한 번 고정합니다", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         if (boardingMessage.isNotBlank()) Text(boardingMessage, style = MaterialTheme.typography.bodySmall)
                                         Button(onClick = onBoardSubway, enabled = !boarding, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
@@ -553,12 +594,16 @@ private fun RouteCard(
                         }
                     }
                     if (isCurrent && phase == LegPhase.ONBOARD) {
-                        val currentStop = leg.stops.getOrNull(progress.stopIndex) ?: leg.stops.firstOrNull().orEmpty()
-                        val nextStop = leg.stops.getOrNull((progress.stopIndex + 1).coerceAtMost(leg.stops.lastIndex)) ?: currentStop
+                        val display = onboardStopDisplay(leg, progress.stopIndex)
+                        val currentStop = display?.let { leg.stops[it.currentIndex] }.orEmpty()
+                        val nextStop = display?.let { leg.stops[it.nextIndex] }.orEmpty()
                         Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.9f))) {
                             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text("현재 이동 위치", style = MaterialTheme.typography.labelSmall, color = TransitIndigo, fontWeight = FontWeight.Bold)
-                                Text("$currentStop  →  $nextStop", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(currentStop, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                if (nextStop != currentStop) {
+                                    Text("다음 $nextStop · ${display?.remainingStops ?: 0}개 남음", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             }
                         }
                         if (leg.kind == TransportKind.SUBWAY) progress.selectedSubwayTrip?.let { trip ->
@@ -576,6 +621,52 @@ private fun RouteCard(
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
                     ) { Text("탑승예정 취소") }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StopProgressRow(
+    leg: com.cobra.dev1new.domain.TransportLeg,
+    onboardDisplay: OnboardStopDisplay?
+) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(onboardDisplay?.currentIndex) {
+        onboardDisplay?.let { listState.scrollToItem(it.currentIndex) }
+    }
+    LazyRow(
+        state = listState,
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        itemsIndexed(leg.stops, key = { index, stop -> "$index-$stop" }) { stopIndex, stop ->
+            val isCurrent = onboardDisplay?.currentIndex == stopIndex
+            val isPassed = onboardDisplay != null && stopIndex < onboardDisplay.currentIndex
+            if (stopIndex > 0) {
+                Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
+            }
+            val background = when {
+                isCurrent -> Color(0xFFFFE1B8)
+                isPassed -> Color(0xFFD8EDDA)
+                onboardDisplay != null -> Color(0xFFE3E7EF)
+                else -> Color.White.copy(alpha = 0.78f)
+            }
+            val foreground = when {
+                isCurrent -> Color(0xFF874B00)
+                isPassed -> Color(0xFF286139)
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Surface(color = background, shape = RoundedCornerShape(50)) {
+                Text(
+                    stop,
+                    Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = foreground,
+                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                    maxLines = 1
+                )
             }
         }
     }

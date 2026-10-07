@@ -176,6 +176,11 @@ object RouteCatalog {
     private val byId = all.associateBy { it.id }
 
     fun journey(id: JourneyId): JourneyDefinition = requireNotNull(byId[id])
+    /** Fixed, verified transfer position. Null means that direction has no displayed cue. */
+    fun subwayQuickTransferPosition(journeyId: JourneyId): String? = when (journeyId) {
+        JourneyId.COMMUTE -> "3-4"
+        else -> null
+    }
     fun initialManualPlanLeg(journey: JourneyDefinition): TransportLeg = journey.legs.first()
     fun allStops(journeyId: JourneyId, legIndex: Int): List<String> =
         journey(journeyId).legs[legIndex].stops

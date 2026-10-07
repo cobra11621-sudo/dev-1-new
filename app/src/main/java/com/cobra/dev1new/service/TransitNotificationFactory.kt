@@ -96,14 +96,16 @@ internal object TransitNotificationFactory {
                     }
                     TransitNotificationText(transitLine, arrival, arrival, 0, stops.size.coerceAtLeast(1), true)
                 }
-                TransportKind.SUBWAY -> TransitNotificationText(
-                    subwayTitle(progress.journeyId, leg.stops),
-                    progress.plannedSubwayText.ifBlank { subwayPlannedText },
-                    progress.plannedSubwayText.ifBlank { subwayPlannedText },
-                    0,
-                    stops.size.coerceAtLeast(1),
-                    true
-                )
+                TransportKind.SUBWAY -> {
+                    val planned = withSubwayQuickTransfer(
+                        progress.journeyId,
+                        progress.plannedSubwayText.ifBlank { subwayPlannedText }
+                    )
+                    TransitNotificationText(
+                        subwayTitle(progress.journeyId, leg.stops), planned, planned,
+                        0, stops.size.coerceAtLeast(1), true
+                    )
+                }
                 TransportKind.KTX -> {
                     val ticket = schedule?.let(::ktxSeatDetails).orEmpty().ifBlank { "KTX 승차권 정보 설정 필요" }
                     TransitNotificationText(
@@ -137,8 +139,11 @@ internal object TransitNotificationFactory {
                 // The door side is actionable only on arrival.  Showing it at
                 // every intermediate station makes the compact Now Bar noisy
                 // and falsely suggests that the user should alight now.
-                val short = if (remaining == 0) "$lower/$direction" else lower
-                TransitNotificationText(title, short, lower, stopIndex, stops.size.coerceAtLeast(1), false)
+                // The expanded lock-screen body can be the only visible line
+                // on some devices. At the destination it must carry the same
+                // door side as Now Bar's short line (출근=왼쪽, 퇴근=오른쪽).
+                val details = if (remaining == 0) "$lower/$direction" else lower
+                TransitNotificationText(title, details, details, stopIndex, stops.size.coerceAtLeast(1), false)
             }
             TransportKind.KTX -> {
                 val depart = KtxScheduleResolver.departureEpochMillis(
@@ -147,10 +152,17 @@ internal object TransitNotificationFactory {
                 )
                 val arrival = schedule?.let { KtxScheduleResolver.arrivalEpochMillis(it, depart ?: nowEpochMillis) }
                 val title = "${KtxScheduleResolver.displayClock(arrival)} ${leg.destination}".trim()
-                val details = "${remaining}개/$current/$next"
+                // At the terminal current and next are identical. Never show
+                // "0개/동대구/동대구" or the matching duplicate on the return trip.
+                val details = if (remaining == 0) "${remaining}개/$current" else "${remaining}개/$current/$next"
                 TransitNotificationText(title, details, details, stopIndex, stops.size.coerceAtLeast(1), false)
             }
         }
+    }
+
+    private fun withSubwayQuickTransfer(journeyId: JourneyId, text: String): String {
+        val position = RouteCatalog.subwayQuickTransferPosition(journeyId) ?: return text
+        return if (text.endsWith("/$position")) text else "$text/$position"
     }
 
     fun build(

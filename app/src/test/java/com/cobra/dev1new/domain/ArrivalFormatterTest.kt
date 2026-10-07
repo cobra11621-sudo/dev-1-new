@@ -30,6 +30,19 @@ class ArrivalFormatterTest {
     }
 
     @Test
+    fun every_bus_formatter_keeps_the_clock_stop_wait_contract() {
+        val fetchedAt = localEpoch(10, 53)
+
+        assertEquals(
+            "11:00(5개, 7분)",
+            ArrivalFormatter.formatVehicle(
+                VehicleArrival(remainingSeconds = 7L * 60L, remainingStops = 5),
+                fetchedAt
+            )
+        )
+    }
+
+    @Test
     fun eachVehicleKeepsItsOwnEtaAndStopCount() {
         val fetchedAt = localEpoch(10, 0)
         val result = ArrivalFormatter.formatPlanned(
