@@ -8,6 +8,10 @@ android {
     namespace = "com.cobra.dev1new"
     compileSdk = 36
 
+    // All APKs and Gradle-generated build products belong in the disposable
+    // workspace area. Deleting this folder is safe; Gradle recreates it.
+    layout.buildDirectory.set(rootProject.layout.projectDirectory.dir("../delete/dev-1-new-build"))
+
     defaultConfig {
         applicationId = "com.cobra.dev1new"
         minSdk = 29

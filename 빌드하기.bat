@@ -9,9 +9,7 @@ if not exist "%ANDROID_HOME%\platform-tools\adb.exe" set "ANDROID_HOME=%LOCALAPP
 set "ANDROID_SDK_ROOT=%ANDROID_HOME%"
 set "GRADLE_USER_HOME=E:\ddd\nodelete\gradle-dev1new"
 set "WRAPPER_JAR=gradle\wrapper\gradle-wrapper.jar"
-set "APK_SOURCE=app\build\outputs\apk\debug\app-debug.apk"
-set "APK_FOLDER=E:\ddd\delete\dev-1-new-apk"
-set "APK_OUTPUT=%APK_FOLDER%\commute-debug.apk"
+set "APK_OUTPUT=E:\ddd\delete\dev-1-new-build\outputs\apk\debug\app-debug.apk"
 
 if not exist "%ANDROID_HOME%\platform-tools\adb.exe" (
     echo Android SDK was not found: %ANDROID_HOME%
@@ -45,18 +43,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist "%APK_SOURCE%" (
+if not exist "%APK_OUTPUT%" (
     echo.
-    echo Build finished but APK was not found: %APK_SOURCE%
-    pause
-    exit /b 1
-)
-
-if not exist "%APK_FOLDER%" mkdir "%APK_FOLDER%"
-copy /y "%APK_SOURCE%" "%APK_OUTPUT%" >nul
-if errorlevel 1 (
-    echo.
-    echo APK copy failed: %APK_OUTPUT%
+    echo Build finished but APK was not found: %APK_OUTPUT%
     pause
     exit /b 1
 )
