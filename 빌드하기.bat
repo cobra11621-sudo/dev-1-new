@@ -53,4 +53,5 @@ if not exist "%APK_OUTPUT%" (
 echo.
 echo [2/2] Done
 echo APK: %APK_OUTPUT%
+start "" explorer.exe /select,"%APK_OUTPUT%"
 pause
