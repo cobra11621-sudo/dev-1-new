@@ -49,6 +49,13 @@ data class TravelSnapshot(
     fun activeProgress(): LegProgress? = activeJourneyId?.let(journeys::get)
 }
 
+/** Transient UI feedback for an explicit recovery request; never persisted as journey progress. */
+data class RecoveryStatus(
+    val journeyId: JourneyId,
+    val headline: String,
+    val detail: String
+)
+
 sealed interface TransitionResult {
     data class Applied(val snapshot: TravelSnapshot) : TransitionResult
     data class Rejected(val snapshot: TravelSnapshot, val reason: String) : TransitionResult
@@ -91,24 +98,18 @@ object JourneyReducer {
 
     fun cancelPlan(current: TravelSnapshot, nowEpochMillis: Long): TransitionResult {
         val progress = current.activeProgress()
-            ?: return TransitionResult.Rejected(current, "취소할 탑승예정이 없습니다.")
-        if (progress.phase != LegPhase.PLANNED) {
-            return TransitionResult.Rejected(current, "탑승예정 상태가 아닙니다.")
-        }
+            ?: return TransitionResult.Rejected(current, "취소할 이동이 없습니다.")
         val updated = current.journeys.toMutableMap()
-        updated[progress.journeyId] = progress.copy(
-            phase = LegPhase.READY,
-            plannedAtEpochMillis = null,
-            boardedAtEpochMillis = null,
-            journeyStartedAtEpochMillis = null,
-            selectedSubwayTrip = null
-        )
+        // An explicit user cancellation must also clear a wrongly recovered
+        // onboard leg. Leaving that state persisted would recreate the live
+        // service and its Now Bar card the next time the app opens.
+        updated[progress.journeyId] = LegProgress(progress.journeyId, 0)
         return TransitionResult.Applied(
             current.copy(
                 activeJourneyId = null,
                 journeys = updated,
                 updatedAtEpochMillis = nowEpochMillis,
-                lastTransition = "plan_cancelled"
+                lastTransition = "journey_cancelled"
             )
         )
     }
@@ -146,6 +147,44 @@ object JourneyReducer {
             return TransitionResult.Rejected(current, "선택한 열차의 역별 시간표가 경로와 맞지 않습니다.")
         }
         return setOnboard(current, progress, nowEpochMillis, selectedTrip, "manual_subway_boarded")
+    }
+
+    /**
+     * A user explicitly requested recovery from a newly received outdoor GPS
+     * fix. This is the one canonical state transition for all UI/service
+     * surfaces; it never edits an Activity-only copy of the journey.
+     */
+    fun recoverAt(
+        current: TravelSnapshot,
+        journeyId: JourneyId,
+        legIndex: Int,
+        phase: LegPhase,
+        stopIndex: Int,
+        nowEpochMillis: Long
+    ): TransitionResult {
+        val route = RouteCatalog.journey(journeyId)
+        val leg = route.legs.getOrNull(legIndex)
+            ?: return TransitionResult.Rejected(current, "복구할 교통수단을 찾지 못했습니다.")
+        if (phase == LegPhase.READY || phase == LegPhase.COMPLETE) {
+            return TransitionResult.Rejected(current, "복구 상태가 올바르지 않습니다.")
+        }
+        val journeys = current.journeys.toMutableMap()
+        current.activeJourneyId?.takeIf { it != journeyId }?.let { journeys[it] = LegProgress(it, 0) }
+        journeys[journeyId] = LegProgress(
+            journeyId = journeyId,
+            legIndex = legIndex,
+            phase = phase,
+            stopIndex = stopIndex.coerceIn(-1, leg.stops.lastIndex.coerceAtLeast(0)),
+            plannedAtEpochMillis = nowEpochMillis,
+            boardedAtEpochMillis = if (phase == LegPhase.ONBOARD) nowEpochMillis else null,
+            journeyStartedAtEpochMillis = nowEpochMillis
+        )
+        return TransitionResult.Applied(current.copy(
+            activeJourneyId = journeyId,
+            journeys = journeys,
+            updatedAtEpochMillis = nowEpochMillis,
+            lastTransition = "gps_position_recovered"
+        ))
     }
 
     private fun setOnboard(
@@ -239,6 +278,33 @@ object JourneyReducer {
         if (progress.phase != LegPhase.ONBOARD) {
             return TransitionResult.Rejected(current, "하차할 탑승 구간이 없습니다.")
         }
+        return advanceToNextPlan(current, progress, nowEpochMillis, "auto_alighted")
+    }
+
+    /**
+     * A KTX that never received a usable in-car GPS fix must not block the
+     * already scheduled following bus. The service calls this only after the
+     * configured KTX arrival time has passed.
+     */
+    fun advancePlannedKtxAtScheduledArrival(
+        current: TravelSnapshot,
+        nowEpochMillis: Long
+    ): TransitionResult {
+        val progress = current.activeProgress()
+            ?: return TransitionResult.Rejected(current, "활성 여정이 없습니다.")
+        val leg = RouteCatalog.journey(progress.journeyId).legs[progress.legIndex]
+        if (progress.phase != LegPhase.PLANNED || leg.kind != TransportKind.KTX) {
+            return TransitionResult.Rejected(current, "시간표 전환 대상 KTX 탑승예정이 아닙니다.")
+        }
+        return advanceToNextPlan(current, progress, nowEpochMillis, "ktx_scheduled_arrival")
+    }
+
+    private fun advanceToNextPlan(
+        current: TravelSnapshot,
+        progress: LegProgress,
+        nowEpochMillis: Long,
+        eventPrefix: String
+    ): TransitionResult {
         val route = RouteCatalog.journey(progress.journeyId)
         val nextIndex = progress.legIndex + 1
         val updated = current.journeys.toMutableMap()
@@ -253,7 +319,7 @@ object JourneyReducer {
                     activeJourneyId = null,
                     journeys = updated,
                     updatedAtEpochMillis = nowEpochMillis,
-                    lastTransition = "auto_alighted_journey_complete"
+                    lastTransition = "${eventPrefix}_journey_complete"
                 )
             )
         }
@@ -270,7 +336,7 @@ object JourneyReducer {
             current.copy(
                 journeys = updated,
                 updatedAtEpochMillis = nowEpochMillis,
-                lastTransition = "auto_alighted_next_plan_created"
+                lastTransition = "${eventPrefix}_next_plan_created"
             )
         )
     }

@@ -9,6 +9,7 @@ import com.cobra.dev1new.domain.JourneyReducer
 import com.cobra.dev1new.domain.KtxSchedule
 import com.cobra.dev1new.domain.LegPhase
 import com.cobra.dev1new.domain.LegProgress
+import com.cobra.dev1new.domain.RecoveryStatus
 import com.cobra.dev1new.domain.SubwayTripSelection
 import com.cobra.dev1new.domain.TravelSnapshot
 import com.cobra.dev1new.domain.TransitionResult
@@ -57,8 +58,14 @@ class TravelRepository private constructor(context: Context) {
     private val mutex = Any()
     private val mutableState = MutableStateFlow(readSnapshot())
     val state: StateFlow<TravelSnapshot> = mutableState.asStateFlow()
+    private val mutableRecoveryStatus = MutableStateFlow<RecoveryStatus?>(null)
+    val recoveryStatus: StateFlow<RecoveryStatus?> = mutableRecoveryStatus.asStateFlow()
 
     fun snapshot(): TravelSnapshot = synchronized(mutex) { mutableState.value }
+
+    fun setRecoveryStatus(status: RecoveryStatus?) {
+        mutableRecoveryStatus.value = status
+    }
 
     fun startInitialPlan(journeyId: JourneyId, nowEpochMillis: Long): TransitionResult =
         update { JourneyReducer.startInitialPlan(it, journeyId, nowEpochMillis) }
@@ -76,6 +83,16 @@ class TravelRepository private constructor(context: Context) {
         JourneyReducer.manualBoardSubway(it, trip, nowEpochMillis)
     }
 
+    fun recoverAt(
+        journeyId: JourneyId,
+        legIndex: Int,
+        phase: LegPhase,
+        stopIndex: Int,
+        nowEpochMillis: Long
+    ): TransitionResult = update {
+        JourneyReducer.recoverAt(it, journeyId, legIndex, phase, stopIndex, nowEpochMillis)
+    }
+
     fun updateStopIndex(index: Int, nowEpochMillis: Long): TransitionResult = update {
         JourneyReducer.updateStopIndex(it, index, nowEpochMillis)
     }
@@ -86,6 +103,9 @@ class TravelRepository private constructor(context: Context) {
 
     fun autoAlight(nowEpochMillis: Long): TransitionResult =
         update { JourneyReducer.autoAlight(it, nowEpochMillis) }
+
+    fun advancePlannedKtxAtScheduledArrival(nowEpochMillis: Long): TransitionResult =
+        update { JourneyReducer.advancePlannedKtxAtScheduledArrival(it, nowEpochMillis) }
 
     fun resetForNewDay(nowEpochMillis: Long): TransitionResult =
         update { JourneyReducer.resetForNewDay(it, nowEpochMillis) }

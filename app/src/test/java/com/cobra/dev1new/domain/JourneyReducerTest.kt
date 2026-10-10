@@ -80,6 +80,19 @@ class JourneyReducerTest {
     }
 
     @Test
+    fun cancellingAnOnboardLegAlsoClearsItsPersistedJourney() {
+        var state = applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.RETURN, 1_000L))
+        state = applied(JourneyReducer.autoBoard(state, 2_000L))
+
+        state = applied(JourneyReducer.cancelPlan(state, 3_000L))
+
+        assertEquals(null, state.activeJourneyId)
+        assertEquals(LegPhase.READY, state.journeys[JourneyId.RETURN]?.phase)
+        assertEquals(0, state.journeys[JourneyId.RETURN]?.legIndex)
+        assertEquals("journey_cancelled", state.lastTransition)
+    }
+
+    @Test
     fun busPreArrivalAlertsArePersistedAsOneShotMarkers() {
         var state = applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.COMMUTE, 1_000L))
         state = applied(JourneyReducer.autoBoard(state, 2_000L))
@@ -105,5 +118,51 @@ class JourneyReducerTest {
             applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.RETURN, todayStart)), nextDay
         ) is TransitionResult.Applied)
         assertTrue(JourneyReducer.resetForNewDay(oldPlan, startedYesterday + 60_000L) is TransitionResult.Rejected)
+    }
+
+    @Test
+    fun plannedKtxCanAdvanceToTheFollowingBusWhenItsScheduledArrivalPasses() {
+        var state = applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.RETURN, 1_000L))
+        state = applied(JourneyReducer.autoBoard(state, 2_000L))
+        state = applied(JourneyReducer.autoAlight(state, 3_000L))
+        assertEquals("return_subway", RouteCatalog.journey(JourneyId.RETURN).legs[state.activeProgress()!!.legIndex].id)
+
+        val subway = RouteCatalog.journey(JourneyId.RETURN).legs[state.activeProgress()!!.legIndex]
+        val trip = SubwayTripSelection(
+            serviceDate = "2026-10-08",
+            trainKey = "test",
+            departureEpochMillis = 4_000L,
+            arrivalsEpochMillis = List(subway.stops.size) { 4_000L + it * 60_000L },
+            departuresEpochMillis = List(subway.stops.size) { 4_030L + it * 60_000L }
+        )
+        state = applied(JourneyReducer.manualBoardSubway(state, trip, 4_000L))
+        state = applied(JourneyReducer.autoAlight(state, 5_000L))
+        assertEquals("return_ktx", RouteCatalog.journey(JourneyId.RETURN).legs[state.activeProgress()!!.legIndex].id)
+        assertEquals(LegPhase.PLANNED, state.activeProgress()?.phase)
+
+        state = applied(JourneyReducer.advancePlannedKtxAtScheduledArrival(state, 6_000L))
+        assertEquals("return_514", RouteCatalog.journey(JourneyId.RETURN).legs[state.activeProgress()!!.legIndex].id)
+        assertEquals(LegPhase.PLANNED, state.activeProgress()?.phase)
+        assertEquals("ktx_scheduled_arrival_next_plan_created", state.lastTransition)
+    }
+
+    @Test
+    fun gpsRecoveryMakesOneCanonicalJourneyStateForEverySurface() {
+        var state = applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.COMMUTE, 1_000L))
+        state = applied(JourneyReducer.recoverAt(
+            state,
+            JourneyId.RETURN,
+            legIndex = 1,
+            phase = LegPhase.ONBOARD,
+            stopIndex = 2,
+            nowEpochMillis = 9_000L
+        ))
+
+        assertEquals(JourneyId.RETURN, state.activeJourneyId)
+        assertEquals(1, state.activeProgress()?.legIndex)
+        assertEquals(LegPhase.ONBOARD, state.activeProgress()?.phase)
+        assertEquals(2, state.activeProgress()?.stopIndex)
+        assertEquals("gps_position_recovered", state.lastTransition)
+        assertEquals(LegPhase.READY, state.journeys[JourneyId.COMMUTE]?.phase)
     }
 }

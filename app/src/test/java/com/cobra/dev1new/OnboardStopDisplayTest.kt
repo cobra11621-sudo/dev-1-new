@@ -27,6 +27,6 @@ class OnboardStopDisplayTest {
         val display = requireNotNull(onboardStopDisplay(subway, 2))
         assertEquals(2, display.currentIndex)
         assertEquals(3, display.nextIndex)
-        assertEquals(subway.stops.lastIndex - 2, display.remainingStops)
+        assertEquals(subway.stops.size - 2, display.remainingStops)
     }
 }

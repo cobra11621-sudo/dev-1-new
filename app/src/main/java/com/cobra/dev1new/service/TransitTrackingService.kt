@@ -28,6 +28,7 @@ import com.cobra.dev1new.domain.KtxScheduleResolver
 import com.cobra.dev1new.domain.LegPhase
 import com.cobra.dev1new.domain.RouteCatalog
 import com.cobra.dev1new.domain.RouteGeometry
+import com.cobra.dev1new.domain.RecoveryStatus
 import com.cobra.dev1new.domain.SubwayTripSelection
 import com.cobra.dev1new.domain.TransitGpsRules
 import com.cobra.dev1new.domain.TransportKind
@@ -63,6 +64,13 @@ class TransitTrackingService : Service() {
     private var busFetchInFlight = false
     private var lastSubwayFetchAt = 0L
     private var subwayFetchInFlight = false
+    private var lastUsableKtxFixAt = 0L
+    private var ktxGpsRecoveryAnnouncementPending = false
+    private var recoveryJourneyId: JourneyId? = null
+    private var recoveryRequestedElapsedRealtime = 0L
+    private var recoveryProgressStep = 0
+    private var recoveryLastFailureReason = ""
+    private val eventGenerations = mutableMapOf<Int, Long>()
     @Volatile private var lastBusApiError = ""
 
     private val tickRunnable = object : Runnable {
@@ -76,15 +84,32 @@ class TransitTrackingService : Service() {
             }
             val snapshot = repository.snapshot()
             val progress = snapshot.activeProgress()
-            if (progress == null) {
+            if (recoveryJourneyId != null &&
+                SystemClock.elapsedRealtime() - recoveryRequestedElapsedRealtime >= RECOVERY_TIMEOUT_MS
+            ) {
+                val journeyId = recoveryJourneyId!!
+                recoveryJourneyId = null
+                recoveryRequestedElapsedRealtime = 0L
+                clearRecoveryStatus()
+                val reason = recoveryLastFailureReason.ifBlank { "90초 안에 새 GPS 위치를 받지 못했습니다." }
+                repository.setRecoveryStatus(RecoveryStatus(journeyId, "현재 위치 복구 실패", reason))
+                postEvent("현재 위치로 경로 복구 실패", "$reason 실외에서 다시 눌러 주세요")
+                reconcileLocationSubscription(snapshot)
+            }
+            if (progress == null && recoveryJourneyId == null) {
                 stopForegroundAndSelf()
+                return
+            }
+            if (progress == null) {
+                postCurrentNotification()
+                mainHandler.postDelayed(this, nextTickDelayMillis())
                 return
             }
             when (progress.phase) {
                 LegPhase.PLANNED -> when (RouteCatalog.journey(progress.journeyId).legs[progress.legIndex].kind) {
                     TransportKind.BUS -> refreshBusArrivalIfDue(progress)
                     TransportKind.SUBWAY -> refreshPlannedSubwayIfDue(progress)
-                    TransportKind.KTX -> Unit
+                    TransportKind.KTX -> advancePlannedKtxAtScheduledArrivalIfDue(snapshot, progress)
                 }
                 LegPhase.ONBOARD -> {
                     if (RouteCatalog.journey(progress.journeyId).legs[progress.legIndex].kind == TransportKind.SUBWAY) {
@@ -94,8 +119,34 @@ class TransitTrackingService : Service() {
                 LegPhase.READY, LegPhase.COMPLETE -> Unit
             }
             postCurrentNotification()
-            mainHandler.postDelayed(this, TICK_INTERVAL_MS)
+            mainHandler.postDelayed(this, nextTickDelayMillis())
         }
+    }
+
+    /** Keep normal refreshes economical, but finish a requested recovery at its stated deadline. */
+    private fun nextTickDelayMillis(): Long {
+        val requestedAt = recoveryRequestedElapsedRealtime
+        if (recoveryJourneyId == null || requestedAt == 0L) return TICK_INTERVAL_MS
+        val remaining = RECOVERY_TIMEOUT_MS - (SystemClock.elapsedRealtime() - requestedAt)
+        return remaining.coerceIn(1L, TICK_INTERVAL_MS)
+    }
+
+    private val recoveryProgressRunnable = object : Runnable {
+        override fun run() {
+            if (recoveryJourneyId == null) return
+            recoveryProgressStep += 1
+            val step = recoveryProgressStep.coerceAtMost(3)
+            val message = if (step < 3) "새 GPS 위치를 확인하고 있습니다." else "새 GPS 위치를 기다리는 중입니다."
+            repository.setRecoveryStatus(RecoveryStatus(recoveryJourneyId!!, "GPS 확인 중 ($step/3)", message))
+            TransitNotificationFactory.postRecoveryStatus(this@TransitTrackingService, "GPS 확인 중 ($step/3)", message)
+            if (recoveryProgressStep < 3) mainHandler.postDelayed(this, RECOVERY_PROGRESS_INTERVAL_MS)
+        }
+    }
+
+    private fun clearRecoveryStatus() {
+        mainHandler.removeCallbacks(recoveryProgressRunnable)
+        getSystemService(android.app.NotificationManager::class.java)
+            .cancel(TransitNotificationFactory.RECOVERY_STATUS_NOTIFICATION_ID)
     }
 
     override fun onCreate() {
@@ -110,7 +161,7 @@ class TransitTrackingService : Service() {
                 if (foregroundStarted) {
                     reconcileLocationSubscription(snapshot)
                     postCurrentNotification()
-                    if (snapshot.activeProgress() == null) stopForegroundAndSelf()
+                    if (snapshot.activeProgress() == null && recoveryJourneyId == null) stopForegroundAndSelf()
                 }
             }
         }
@@ -118,7 +169,17 @@ class TransitTrackingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val snapshot = repository.snapshot()
-        if (snapshot.activeProgress() == null) {
+        val requestedRecovery = intent?.getStringExtra(EXTRA_RECOVERY_JOURNEY_ID)
+            ?.let { runCatching { JourneyId.valueOf(it) }.getOrNull() }
+        if (requestedRecovery != null) {
+            recoveryJourneyId = requestedRecovery
+            recoveryRequestedElapsedRealtime = SystemClock.elapsedRealtime()
+            recoveryProgressStep = 0
+            recoveryLastFailureReason = ""
+            mainHandler.removeCallbacks(recoveryProgressRunnable)
+            mainHandler.post(recoveryProgressRunnable)
+        }
+        if (snapshot.activeProgress() == null && recoveryJourneyId == null) {
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -149,6 +210,7 @@ class TransitTrackingService : Service() {
     override fun onDestroy() {
         foregroundStarted = false
         mainHandler.removeCallbacks(tickRunnable)
+        clearRecoveryStatus()
         removeLocationUpdates()
         releaseTrackingWakeLock()
         stateObserver?.cancel()
@@ -167,11 +229,12 @@ class TransitTrackingService : Service() {
         val leg = progress?.let {
             RouteCatalog.journey(it.journeyId).legs.getOrNull(it.legIndex)
         }
-        val shouldTrack = progress != null && leg != null &&
+        val shouldTrack = recoveryJourneyId != null || (progress != null && leg != null &&
             progress.phase in setOf(LegPhase.PLANNED, LegPhase.ONBOARD) &&
-            leg.kind != TransportKind.SUBWAY
+            leg.kind != TransportKind.SUBWAY)
         val nextKey = if (shouldTrack) {
-            "${progress!!.journeyId}:${leg!!.id}:${progress.phase}"
+            recoveryJourneyId?.let { "recovery:$it:$recoveryRequestedElapsedRealtime" }
+                ?: "${progress!!.journeyId}:${leg!!.id}:${progress.phase}"
         } else ""
         if (nextKey == locationSubscriptionKey) return
         locationSubscriptionKey = nextKey
@@ -179,6 +242,7 @@ class TransitTrackingService : Service() {
         busProbe = null
         busDestinationFixCount = 0
         ktxDestinationFixCount = 0
+        lastUsableKtxFixAt = 0L
         if (!shouldTrack) {
             removeLocationUpdates()
             return
@@ -227,6 +291,14 @@ class TransitTrackingService : Service() {
     }
 
     private fun handleLocation(location: Location) {
+        val pendingRecovery = recoveryJourneyId
+        if (pendingRecovery != null) {
+            if (location.elapsedRealtimeNanos <= 0L ||
+                location.elapsedRealtimeNanos / 1_000_000L < recoveryRequestedElapsedRealtime
+            ) return
+            handleRecoveryFix(pendingRecovery, location)
+            return
+        }
         val snapshot = repository.snapshot()
         val progress = snapshot.activeProgress() ?: return
         val leg = RouteCatalog.journey(progress.journeyId).legs.getOrNull(progress.legIndex) ?: return
@@ -240,11 +312,100 @@ class TransitTrackingService : Service() {
                 location.elapsedRealtimeNanos / 1_000_000L else SystemClock.elapsedRealtime()
         )
         val projection = RouteGeometry.project(leg.routePoints, fix.latitude, fix.longitude) ?: return
+        if (ktxGpsRecoveryAnnouncementPending && fix.accuracyMeters != null && fix.accuracyMeters <= KTX_MAX_ACCURACY_METERS) {
+            ktxGpsRecoveryAnnouncementPending = false
+            postEvent("GPS 위치 수신 정상화", "KTX 이후 위치를 다시 확인했습니다")
+        }
         when (leg.kind) {
             TransportKind.BUS -> handleBusFix(snapshot, progress, leg, fix, projection, now)
             TransportKind.KTX -> handleKtxFix(snapshot, progress, leg, fix, projection, now)
             TransportKind.SUBWAY -> Unit
         }
+    }
+
+    /** Use only the first fresh location received after the explicit button tap. */
+    private fun handleRecoveryFix(journeyId: JourneyId, location: Location) {
+        val now = System.currentTimeMillis()
+        val fix = GeoFix(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            accuracyMeters = if (location.hasAccuracy()) location.accuracy else null,
+            speedKmh = if (location.hasSpeed()) location.speed * 3.6f else 0.0f,
+            elapsedRealtimeMillis = location.elapsedRealtimeNanos / 1_000_000L
+        )
+        val route = RouteCatalog.journey(journeyId)
+        val accuracy = fix.accuracyMeters
+        if (accuracy == null) {
+            recoveryLastFailureReason = "GPS 정확도를 확인하지 못했습니다."
+            repository.setRecoveryStatus(RecoveryStatus(journeyId, "GPS 확인 중", recoveryLastFailureReason))
+            return
+        }
+        if (accuracy > RECOVERY_MAX_ACCURACY_METERS) {
+            recoveryLastFailureReason = "GPS 정확도가 ${accuracy.toInt()}m로 충분하지 않습니다."
+            repository.setRecoveryStatus(RecoveryStatus(journeyId, "GPS 확인 중", recoveryLastFailureReason))
+            return
+        }
+
+        val subwayIndex = route.legs.indexOfFirst { it.kind == TransportKind.SUBWAY }
+        val subwayPoint = RouteCatalog.subwayBoardingPoint(journeyId)
+        // A 100m-accurate fix cannot truthfully establish a 50m station-exit
+        // boundary, so subway recovery needs both a 50m coordinate distance
+        // and 50m-or-better reported accuracy.
+        val subwayNearby = subwayIndex >= 0 && subwayPoint != null &&
+            accuracy <= SUBWAY_RECOVERY_RADIUS_METERS &&
+            RouteGeometry.distance(fix.latitude, fix.longitude, subwayPoint.latitude, subwayPoint.longitude) <= SUBWAY_RECOVERY_RADIUS_METERS
+        val ktxIndex = route.legs.indexOfFirst { it.kind == TransportKind.KTX }
+        val ktxProjection = ktxIndex.takeIf { it >= 0 }?.let { index ->
+            RouteGeometry.project(route.legs[index].routePoints, fix.latitude, fix.longitude)
+        }
+        val ktxSchedule = repository.snapshot().ktxSchedules[journeyId]
+        val ktxDeparture = ktxSchedule?.let { KtxScheduleResolver.departureEpochMillis(it, now) }
+        val ktxArrival = ktxSchedule?.let { schedule ->
+            ktxDeparture?.let { KtxScheduleResolver.arrivalEpochMillis(schedule, it) }
+        }
+        val ktxMatched = ktxIndex >= 0 && TransitGpsRules.isKtxBoardingFix(
+            fix, now, ktxDeparture, ktxArrival
+        )
+        val busMatch = route.legs.mapIndexedNotNull { index, leg ->
+            if (leg.kind != TransportKind.BUS) null else RouteGeometry.project(leg.routePoints, fix.latitude, fix.longitude)
+                ?.takeIf { it.distanceMeters <= BUS_ROUTE_CORRIDOR_METERS }
+                ?.let { index to it }
+        }.minByOrNull { it.second.distanceMeters }
+
+        val applied = when {
+            subwayNearby -> repository.recoverAt(journeyId, subwayIndex, LegPhase.PLANNED, 0, now)
+            ktxMatched -> repository.recoverAt(
+                journeyId, ktxIndex, LegPhase.ONBOARD,
+                ktxProjection?.stopIndex(route.legs[ktxIndex].stops.size) ?: 0, now
+            )
+            busMatch != null -> {
+                val (index, projection) = busMatch
+                repository.recoverAt(
+                    journeyId, index, LegPhase.ONBOARD,
+                    TransitGpsRules.confirmedBusPassedStopIndex(route.legs[index].routePoints, projection), now
+                )
+            }
+            else -> null
+        }
+        when (applied) {
+            is com.cobra.dev1new.domain.TransitionResult.Applied -> {
+                recoveryJourneyId = null
+                recoveryRequestedElapsedRealtime = 0L
+                clearRecoveryStatus()
+                repository.setRecoveryStatus(RecoveryStatus(
+                    journeyId,
+                    "GPS 위치 수신 정상화",
+                    "${route.legs[applied.snapshot.activeProgress()!!.legIndex].displayName} 경로로 복구했습니다."
+                ))
+                postEvent("GPS 위치 수신 정상화", "현재 위치로 ${route.legs[applied.snapshot.activeProgress()!!.legIndex].displayName} 경로를 복구했습니다")
+            }
+            else -> {
+                recoveryLastFailureReason = "현재 위치가 해당 경로와 맞지 않습니다."
+                repository.setRecoveryStatus(RecoveryStatus(journeyId, "GPS 확인 중", recoveryLastFailureReason))
+                return
+            }
+        }
+        reconcileLocationSubscription(repository.snapshot())
     }
 
     private fun handleBusFix(
@@ -327,11 +488,24 @@ class TransitTrackingService : Service() {
     ) {
         val schedule = snapshot.ktxSchedules[progress.journeyId] ?: return
         val departure = KtxScheduleResolver.departureEpochMillis(schedule, progress.plannedAtEpochMillis ?: now)
+        val arrival = departure?.let { KtxScheduleResolver.arrivalEpochMillis(schedule, it) }
+        val usableForKtxProgress = fix.accuracyMeters != null &&
+            fix.accuracyMeters <= KTX_MAX_ACCURACY_METERS &&
+            projection.distanceMeters <= KTX_ROUTE_CORRIDOR_METERS
+        val previousUsableFixAt = lastUsableKtxFixAt
+        if (usableForKtxProgress) lastUsableKtxFixAt = now
         if (progress.phase == LegPhase.PLANNED) {
-            if (TransitGpsRules.isKtxBoardingFix(fix, projection, now, departure)) {
+            if (TransitGpsRules.isKtxBoardingFix(fix, now, departure, arrival)) {
                 if (repository.autoBoard(now) is com.cobra.dev1new.domain.TransitionResult.Applied) {
-                    postEvent("KTX 탑승 확인", "경로·출발 시각·속도 조건 확인 · 자동 탑승 처리")
+                    postEvent("KTX 탑승 확인", "출발·도착 시각과 시속 20km 조건 확인 · 자동 탑승 처리")
                 }
+            } else if (
+                usableForKtxProgress &&
+                departure != null &&
+                now >= departure + KTX_GPS_RECOVERY_GAP_MS &&
+                (previousUsableFixAt == 0L || now - previousUsableFixAt >= KTX_GPS_RECOVERY_GAP_MS)
+            ) {
+                postEvent("GPS 위치 수신 정상화", "KTX 위치를 다시 확인했습니다")
             }
             return
         }
@@ -350,6 +524,35 @@ class TransitTrackingService : Service() {
             }
         } else {
             ktxDestinationFixCount = 0
+        }
+    }
+
+    /**
+     * GPS is useful for confirming an actual KTX boarding and arrival, but it
+     * must not hide the next bus when the train's in-car reception remains
+     * unavailable. The configured arrival time is the fallback boundary.
+     */
+    private fun advancePlannedKtxAtScheduledArrivalIfDue(
+        snapshot: TravelSnapshot,
+        progress: com.cobra.dev1new.domain.LegProgress
+    ) {
+        val schedule = snapshot.ktxSchedules[progress.journeyId] ?: return
+        val now = System.currentTimeMillis()
+        val departure = KtxScheduleResolver.departureEpochMillis(
+            schedule,
+            progress.plannedAtEpochMillis ?: now
+        ) ?: return
+        val arrival = KtxScheduleResolver.arrivalEpochMillis(schedule, departure) ?: return
+        if (now < arrival) return
+        if (repository.advancePlannedKtxAtScheduledArrival(now) is com.cobra.dev1new.domain.TransitionResult.Applied) {
+            ktxGpsRecoveryAnnouncementPending = true
+            postEvent("KTX 도착 시각 경과", "GPS 미확정 · 다음 버스 탑승예정으로 전환")
+            repository.snapshot().activeProgress()?.let { next ->
+                val nextLeg = RouteCatalog.journey(next.journeyId).legs[next.legIndex]
+                if (next.phase == LegPhase.PLANNED && nextLeg.kind == TransportKind.BUS) {
+                    refreshBusArrivalIfDue(next)
+                }
+            }
         }
     }
 
@@ -427,10 +630,14 @@ class TransitTrackingService : Service() {
     }
 
     private fun postEvent(title: String, message: String, eventId: Int = TransitNotificationFactory.EVENT_NOTIFICATION_ID) {
+        val generation = (eventGenerations[eventId] ?: 0L) + 1L
+        eventGenerations[eventId] = generation
         TransitNotificationFactory.postEvent(this, title, message, eventId)
         mainHandler.postDelayed({
-            getSystemService(android.app.NotificationManager::class.java)
-                .cancel(eventId)
+            if (eventGenerations[eventId] == generation) {
+                getSystemService(android.app.NotificationManager::class.java)
+                    .cancel(eventId)
+            }
         }, EVENT_NOTIFICATION_DURATION_MS)
     }
 
@@ -485,10 +692,24 @@ class TransitTrackingService : Service() {
         private const val BUS_ROUTE_CORRIDOR_METERS = 250.0
         private const val KTX_MAX_ACCURACY_METERS = 250.0f
         private const val KTX_ROUTE_CORRIDOR_METERS = 5_000.0
-        private const val EVENT_NOTIFICATION_DURATION_MS = 2_000L
+        private const val KTX_GPS_RECOVERY_GAP_MS = 30_000L
+        private const val RECOVERY_MAX_ACCURACY_METERS = 100.0f
+        private const val SUBWAY_RECOVERY_RADIUS_METERS = 50.0
+        private const val RECOVERY_TIMEOUT_MS = 90_000L
+        private const val RECOVERY_PROGRESS_INTERVAL_MS = 2_000L
+        // Event cards must remain readable after the short two-pulse vibration.
+        // This affects visibility only; it does not add or lengthen vibrations.
+        private const val EVENT_NOTIFICATION_DURATION_MS = 6_000L
+        private const val EXTRA_RECOVERY_JOURNEY_ID = "recovery_journey_id"
 
         fun start(context: Context) {
             val intent = Intent(context, TransitTrackingService::class.java)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun recoverCurrentPosition(context: Context, journeyId: JourneyId) {
+            val intent = Intent(context, TransitTrackingService::class.java)
+                .putExtra(EXTRA_RECOVERY_JOURNEY_ID, journeyId.name)
             ContextCompat.startForegroundService(context, intent)
         }
     }

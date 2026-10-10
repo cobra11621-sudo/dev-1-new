@@ -179,6 +179,13 @@ object RouteCatalog {
     /** Fixed, verified transfer position. Null means that direction has no displayed cue. */
     fun subwayQuickTransferPosition(journeyId: JourneyId): String? = when (journeyId) {
         JourneyId.COMMUTE -> "3-4"
+        JourneyId.RETURN -> "6-4"
+        else -> null
+    }
+    /** Outdoor points where a recovery request should resume the subway plan. */
+    fun subwayBoardingPoint(journeyId: JourneyId): GeoPoint? = when (journeyId) {
+        JourneyId.COMMUTE -> ktxCommutePoints.last()
+        JourneyId.RETURN -> GeoPoint(35.8724067, 128.7335650) // 안심역 1번 출구
         else -> null
     }
     fun initialManualPlanLeg(journey: JourneyDefinition): TransportLeg = journey.legs.first()

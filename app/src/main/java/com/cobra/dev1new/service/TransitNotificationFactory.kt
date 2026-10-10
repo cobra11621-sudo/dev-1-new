@@ -31,6 +31,7 @@ internal object TransitNotificationFactory {
     const val ALERT_CHANNEL_ID = "dev1native_transit_events"
     const val NOTIFICATION_ID = 4200
     const val EVENT_NOTIFICATION_ID = 4201
+    const val RECOVERY_STATUS_NOTIFICATION_ID = 4202
     const val ACTION_CANCEL_PLAN = "com.cobra.dev1new.action.CANCEL_PLAN"
 
     fun createChannel(context: Context) {
@@ -108,8 +109,9 @@ internal object TransitNotificationFactory {
                 }
                 TransportKind.KTX -> {
                     val ticket = schedule?.let(::ktxSeatDetails).orEmpty().ifBlank { "KTX 승차권 정보 설정 필요" }
+                    val compactTicket = schedule?.let(::ktxCompactSeatDetails).orEmpty().ifBlank { "KTX 일정 설정 필요" }
                     TransitNotificationText(
-                        ktxPlannedTitle(schedule, nowEpochMillis), ticket, ticket,
+                        ktxPlannedTitle(schedule, nowEpochMillis), compactTicket, ticket,
                         0, stops.size.coerceAtLeast(1), true
                     )
                 }
@@ -135,15 +137,24 @@ internal object TransitNotificationFactory {
                 val destination = leg.destination.removeSuffix("역")
                 val title = "${KtxScheduleResolver.displayClock(arrival)} $destination".trim()
                 val direction = if (progress.journeyId == JourneyId.COMMUTE) "왼쪽" else "오른쪽"
-                val lower = if (remaining == 0) "${remaining}개/$current" else "${remaining}개/$current/$next"
+                // The onboard count is inclusive: current station + all
+                // intermediate stations + destination.  Bus progress uses
+                // that same meaning even though its stored index is the last
+                // passed stop.
+                val subwayRemaining = (stops.lastIndex - stopIndex + 1).coerceAtLeast(1)
+                val atDestination = stopIndex == stops.lastIndex
+                val lower = if (atDestination) "${subwayRemaining}개/$current" else "${subwayRemaining}개/$current/$next"
                 // The door side is actionable only on arrival.  Showing it at
                 // every intermediate station makes the compact Now Bar noisy
                 // and falsely suggests that the user should alight now.
-                // The expanded lock-screen body can be the only visible line
-                // on some devices. At the destination it must carry the same
-                // door side as Now Bar's short line (출근=왼쪽, 퇴근=오른쪽).
-                val details = if (remaining == 0) "$lower/$direction" else lower
-                TransitNotificationText(title, details, details, stopIndex, stops.size.coerceAtLeast(1), false)
+                // Keep the expanded lock-screen body as route position only;
+                // Samsung's Now Bar lower line is shortCriticalText and is
+                // the sole compact surface that receives the door side.
+                val shortCriticalText = if (atDestination) "$lower/$direction" else lower
+                // Samsung uses shortCriticalText for Now Bar. The expanded
+                // notification keeps the current/next route text without an
+                // arrival-door instruction, as agreed in the display contract.
+                TransitNotificationText(title, shortCriticalText, lower, stopIndex, stops.size.coerceAtLeast(1), false)
             }
             TransportKind.KTX -> {
                 val depart = KtxScheduleResolver.departureEpochMillis(
@@ -238,6 +249,21 @@ internal object TransitNotificationFactory {
         manager.notify(notificationId, notification)
     }
 
+    /** Low-priority, non-vibrating recovery status. It does not own the Now Bar card. */
+    fun postRecoveryStatus(context: Context, title: String, message: String) {
+        createChannel(context)
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val notification = Notification.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_transit)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setCategory(Notification.CATEGORY_STATUS)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(true)
+            .build()
+        manager.notify(RECOVERY_STATUS_NOTIFICATION_ID, notification)
+    }
+
     private fun requestPromotedOngoing(builder: Notification.Builder) {
         runCatching {
             Notification.Builder::class.java
@@ -291,8 +317,14 @@ internal object TransitNotificationFactory {
         if (schedule == null) return "KTX 일정 설정 필요"
         val departure = KtxScheduleResolver.departureEpochMillis(schedule, now)
         val train = KtxScheduleResolver.notificationTrainIdentifier(schedule.trainIdentifier)
-        val time = KtxScheduleResolver.displayClock(departure).ifBlank { schedule.departureTime }
-        return "$train, $time".trim().trimEnd(',')
+        val departureTime = KtxScheduleResolver.displayClock(departure).ifBlank { schedule.departureTime }
+        val arrivalTime = departure?.let { KtxScheduleResolver.arrivalEpochMillis(schedule, it) }
+            ?.let(KtxScheduleResolver::displayClock)
+            .orEmpty()
+            .ifBlank { schedule.arrivalTime }
+        return listOf(train, departureTime, arrivalTime)
+            .filter(String::isNotBlank)
+            .joinToString(", ")
     }
 
     private fun ktxSeatDetails(schedule: com.cobra.dev1new.domain.KtxSchedule): String = buildList {
@@ -300,4 +332,11 @@ internal object TransitNotificationFactory {
         schedule.car.takeIf(String::isNotBlank)?.let { add("${it}호차") }
         schedule.seat.takeIf(String::isNotBlank)?.let { add("${it}좌석") }
     }.joinToString(" · ").ifBlank { "승차홈·호차·좌석 입력 필요" }
+
+    /** Compact enough for Samsung's one-line Now Bar/status surface. */
+    private fun ktxCompactSeatDetails(schedule: com.cobra.dev1new.domain.KtxSchedule): String = buildList {
+        schedule.platform.takeIf(String::isNotBlank)?.let(::add)
+        schedule.car.takeIf(String::isNotBlank)?.let(::add)
+        schedule.seat.takeIf(String::isNotBlank)?.let(::add)
+    }.joinToString("/")
 }

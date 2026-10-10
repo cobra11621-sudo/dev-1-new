@@ -77,6 +77,7 @@ import com.cobra.dev1new.domain.KtxScheduleResolver
 import com.cobra.dev1new.domain.LegPhase
 import com.cobra.dev1new.domain.LegProgress
 import com.cobra.dev1new.domain.RouteCatalog
+import com.cobra.dev1new.domain.RecoveryStatus
 import com.cobra.dev1new.domain.SubwayTripSelection
 import com.cobra.dev1new.domain.TravelSnapshot
 import com.cobra.dev1new.domain.TransitionResult
@@ -115,7 +116,11 @@ internal fun onboardStopDisplay(leg: com.cobra.dev1new.domain.TransportLeg, stor
     val nextIndex = (currentIndex + 1).coerceAtMost(lastIndex)
     val remainingStops = when (leg.kind) {
         TransportKind.BUS -> (lastIndex - storedStopIndex).coerceAtLeast(0)
-        else -> (lastIndex - currentIndex).coerceAtLeast(0)
+        // Bus progress is the last confirmed-passed stop, while subway
+        // progress is the current station.  Both displayed counts include
+        // the current stop through the destination, so their meaning matches.
+        TransportKind.SUBWAY -> (lastIndex - currentIndex + 1).coerceAtLeast(1)
+        TransportKind.KTX -> (lastIndex - currentIndex).coerceAtLeast(0)
     }
     return OnboardStopDisplay(currentIndex, nextIndex, remainingStops)
 }
@@ -142,6 +147,7 @@ class MainActivity : ComponentActivity() {
     private val apiKeyVault by lazy { ApiKeyVault(this) }
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var pendingJourneyId: JourneyId? = null
+    private var pendingRecoveryJourneyId: JourneyId? = null
     private var restorePermissionWarningShown = false
 
     private val accessLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
@@ -151,7 +157,9 @@ class MainActivity : ComponentActivity() {
             grants[Manifest.permission.POST_NOTIFICATIONS] == true ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         val requested = pendingJourneyId
+        val requestedRecovery = pendingRecoveryJourneyId
         pendingJourneyId = null
+        pendingRecoveryJourneyId = null
         if (!fineGranted || !notificationsGranted) {
             val missing = buildString {
                 if (!fineGranted) append("정확한 위치 권한")
@@ -162,6 +170,7 @@ class MainActivity : ComponentActivity() {
             return@registerForActivityResult
         }
         requested?.let(::beginJourney)
+        requestedRecovery?.let(::beginRecovery)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -169,15 +178,19 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = TransitColors) {
                 val snapshot by repository.state.collectAsState()
+                val recoveryStatus by repository.recoveryStatus.collectAsState()
                 NativeCommuteApp(
                     snapshot = snapshot,
+                    recoveryStatus = recoveryStatus,
                     apiKeyConfigured = apiKeyVault.isConfigured(),
                     onStart = ::requestAccessAndStart,
                     onCancel = {
                         repository.cancelPlan(System.currentTimeMillis())
+                        repository.setRecoveryStatus(null)
                         stopService(Intent(this, TransitTrackingService::class.java))
                     },
                     onBoardSubway = ::boardSubway,
+                    onRecover = ::requestRecovery,
                     onSaveSettings = { commute, returning, apiKey ->
                         val keySaved = apiKey == null || runCatching {
                             apiKeyVault.save(apiKey)
@@ -252,6 +265,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * The recovery action intentionally requests a new location fix.  A cached
+     * fix would make an underground/KTX recovery appear successful at an old
+     * place and would put the shared native state on the wrong leg.
+     */
+    private fun requestRecovery(journeyId: JourneyId) {
+        val fineGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val notificationsGranted = Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (fineGranted && notificationsGranted) {
+            beginRecovery(journeyId)
+            return
+        }
+        pendingRecoveryJourneyId = journeyId
+        val permissions = buildList {
+            if (!fineGranted) {
+                add(Manifest.permission.ACCESS_FINE_LOCATION)
+                add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
+            if (Build.VERSION.SDK_INT >= 33 && !notificationsGranted) add(Manifest.permission.POST_NOTIFICATIONS)
+        }.toTypedArray()
+        accessLauncher.launch(permissions)
+    }
+
+    private fun beginRecovery(journeyId: JourneyId) {
+        try {
+            repository.setRecoveryStatus(RecoveryStatus(journeyId, "GPS 확인 준비", "새 GPS 위치를 요청했습니다."))
+            TransitTrackingService.recoverCurrentPosition(this, journeyId)
+            Toast.makeText(this, "새 GPS 위치를 확인해 경로를 복구하는 중입니다.", Toast.LENGTH_SHORT).show()
+        } catch (error: Exception) {
+            Toast.makeText(this, "현재 위치 복구를 시작하지 못했습니다: ${error.message.orEmpty()}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun boardSubway(journeyId: JourneyId, onDone: (String) -> Unit) {
         val tappedAt = System.currentTimeMillis()
         uiScope.launch {
@@ -287,10 +334,12 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun NativeCommuteApp(
     snapshot: TravelSnapshot,
+    recoveryStatus: RecoveryStatus?,
     apiKeyConfigured: Boolean,
     onStart: (JourneyId) -> Unit,
     onCancel: () -> Unit,
     onBoardSubway: (JourneyId, (String) -> Unit) -> Unit,
+    onRecover: (JourneyId) -> Unit,
     onSaveSettings: (KtxSchedule?, KtxSchedule?, String?) -> Boolean
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -332,9 +381,9 @@ private fun NativeCommuteApp(
         Surface(Modifier.fillMaxSize().padding(insets), color = TransitCanvas) {
             when (tab) {
                 0 -> JourneyScreen(
-                    snapshot, RouteCatalog.commute, onStart, onCancel, boardingJourney,
+                    snapshot, recoveryStatus, RouteCatalog.commute, onStart, onCancel, boardingJourney,
                     if (boardingMessageJourney == JourneyId.COMMUTE) boardingMessage else "",
-                    apiKeyConfiguredState, { settingsOpen = true }
+                    apiKeyConfiguredState, { settingsOpen = true }, onRecover
                 ) { id ->
                     boardingJourney = id
                     boardingMessageJourney = id
@@ -342,9 +391,9 @@ private fun NativeCommuteApp(
                     onBoardSubway(id) { boardingMessage = it; if (!it.contains("찾는 중")) boardingJourney = null }
                 }
                 1 -> JourneyScreen(
-                    snapshot, RouteCatalog.returning, onStart, onCancel, boardingJourney,
+                    snapshot, recoveryStatus, RouteCatalog.returning, onStart, onCancel, boardingJourney,
                     if (boardingMessageJourney == JourneyId.RETURN) boardingMessage else "",
-                    apiKeyConfiguredState, { settingsOpen = true }
+                    apiKeyConfiguredState, { settingsOpen = true }, onRecover
                 ) { id ->
                     boardingJourney = id
                     boardingMessageJourney = id
@@ -376,6 +425,7 @@ private fun NativeCommuteApp(
 @Composable
 private fun JourneyScreen(
     snapshot: TravelSnapshot,
+    recoveryStatus: RecoveryStatus?,
     journey: JourneyDefinition,
     onStart: (JourneyId) -> Unit,
     onCancel: () -> Unit,
@@ -383,6 +433,7 @@ private fun JourneyScreen(
     boardingMessage: String,
     apiKeyConfigured: Boolean,
     onOpenSettings: () -> Unit,
+    onRecover: (JourneyId) -> Unit,
     startBoarding: (JourneyId) -> Unit
 ) {
     LazyColumn(
@@ -391,6 +442,32 @@ private fun JourneyScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         if (!apiKeyConfigured) item { ApiKeyNotice(onOpenSettings) }
+        item {
+            OutlinedButton(
+                onClick = { onRecover(journey.id) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("현재 위치로 경로 복구")
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "실외에서 누르면 새 GPS 위치로 버스·지하철·KTX 상태를 다시 맞춥니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (recoveryStatus?.journeyId == journey.id) item {
+            Card(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFEAF0FF))
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(recoveryStatus.headline, color = TransitIndigo, fontWeight = FontWeight.Bold)
+                    Text(recoveryStatus.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
         item {
             val progress = snapshot.journeys[journey.id]
             RouteCard(
@@ -614,12 +691,12 @@ private fun RouteCard(
                         if (anyActive) Text("다른 이동이 진행 중입니다. 현재 여정을 먼저 완료하거나 취소하세요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                         else Button(onClick = onStart, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) { Text("${leg.displayName} 탑승예정 시작") }
                     }
-                    if (isCurrent && phase == LegPhase.PLANNED) OutlinedButton(
+                    if (isCurrent && phase in setOf(LegPhase.PLANNED, LegPhase.ONBOARD)) OutlinedButton(
                         onClick = onCancel,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                    ) { Text("탑승예정 취소") }
+                    ) { Text(if (phase == LegPhase.ONBOARD) "이동 취소" else "탑승예정 취소") }
                 }
             }
         }
@@ -759,7 +836,7 @@ private fun KtxSettingsDialog(
     var clearApiKeyRequested by remember { mutableStateOf(false) }
     var isApiKeyConfigured by remember(initialApiKeyConfigured) { mutableStateOf(initialApiKeyConfigured) }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxWidth(0.94f).heightIn(max = 740.dp), shape = MaterialTheme.shapes.large, tonalElevation = 6.dp) {
+        Surface(Modifier.fillMaxWidth(0.87f).heightIn(max = 740.dp), shape = MaterialTheme.shapes.large, tonalElevation = 6.dp) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("교통 정보 설정", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("버스 실시간 도착정보", style = MaterialTheme.typography.titleSmall, color = TransitIndigo, fontWeight = FontWeight.Bold)

@@ -88,14 +88,14 @@ class RouteGeometryTest {
     }
 
     @Test
-    fun ktxBoardingRequiresScheduleWindowSpeedAccuracyAndRouteProximity() {
+    fun ktxBoardingRequiresItsScheduledTravelWindowSpeedAndAccuracyNotRailLineProximity() {
         val departure = 1_800_000_000_000L
+        val arrival = departure + 75L * 60_000L
         val fix = GeoFix(36.0, 127.005, 30f, 55f, 1L)
-        val projection = RouteGeometry.project(route, fix.latitude, fix.longitude)!!
 
-        assertTrue(TransitGpsRules.isKtxBoardingFix(fix, projection, departure, departure))
-        assertFalse(TransitGpsRules.isKtxBoardingFix(fix.copy(speedKmh = 19f), projection, departure, departure))
-        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, projection, departure + 121L * 60_000L, departure))
-        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, projection.copy(distanceMeters = 5_001.0), departure, departure))
+        assertTrue(TransitGpsRules.isKtxBoardingFix(fix, departure, departure, arrival))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix.copy(speedKmh = 19f), departure, departure, arrival))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, arrival + 1L, departure, arrival))
+        assertTrue(TransitGpsRules.isKtxBoardingFix(fix.copy(latitude = 35.0, longitude = 129.0), departure, departure, arrival))
     }
 }

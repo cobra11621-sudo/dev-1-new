@@ -161,17 +161,19 @@ object TransitGpsRules {
 
     fun isKtxBoardingFix(
         fix: GeoFix,
-        projection: RouteProjection,
         nowEpochMillis: Long,
-        scheduledDepartureEpochMillis: Long?
+        scheduledDepartureEpochMillis: Long?,
+        scheduledArrivalEpochMillis: Long?
     ): Boolean {
         val departure = scheduledDepartureEpochMillis ?: return false
-        val earliest = departure - Duration.ofMinutes(90).toMillis()
-        val latest = departure + Duration.ofMinutes(120).toMillis()
+        val arrival = scheduledArrivalEpochMillis ?: return false
         val accuracy = fix.accuracyMeters ?: return false
-        return nowEpochMillis in earliest..latest &&
+        // KTX is a fixed personal itinerary.  Do not use a coarse drawn rail
+        // line for boarding: optional stops such as 서대구 can make that line
+        // misleading.  A valid timetable window and train-level speed are the
+        // deliberate boarding signal.
+        return nowEpochMillis in departure..arrival &&
             fix.speedKmh >= 20.0f &&
-            projection.distanceMeters <= 5_000.0 &&
             accuracy <= 100.0f
     }
 
