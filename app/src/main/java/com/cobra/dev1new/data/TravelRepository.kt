@@ -11,6 +11,7 @@ import com.cobra.dev1new.domain.LegPhase
 import com.cobra.dev1new.domain.LegProgress
 import com.cobra.dev1new.domain.RecoveryStatus
 import com.cobra.dev1new.domain.SubwayTripSelection
+import com.cobra.dev1new.domain.SubwayAlightInfo
 import com.cobra.dev1new.domain.TravelSnapshot
 import com.cobra.dev1new.domain.TransitionResult
 import com.cobra.dev1new.domain.TransportKind
@@ -99,6 +100,14 @@ class TravelRepository private constructor(context: Context) {
 
     fun markBusPreArrivalAlert(threshold: Int, nowEpochMillis: Long): TransitionResult = update {
         JourneyReducer.markBusPreArrivalAlert(it, threshold, nowEpochMillis)
+    }
+
+    fun markSubwayPreArrivalAlert(threshold: Int, nowEpochMillis: Long): TransitionResult = update {
+        JourneyReducer.markSubwayPreArrivalAlert(it, threshold, nowEpochMillis)
+    }
+
+    fun markSubwayDestinationReached(nowEpochMillis: Long): TransitionResult = update {
+        JourneyReducer.markSubwayDestinationReached(it, nowEpochMillis)
     }
 
     fun autoAlight(nowEpochMillis: Long): TransitionResult =
@@ -192,10 +201,17 @@ class TravelRepository private constructor(context: Context) {
     }
 
     private fun encode(snapshot: TravelSnapshot): JSONObject = JSONObject().apply {
-        put("schema_version", 2)
+        put("schema_version", 3)
         put("active_journey_id", snapshot.activeJourneyId?.name ?: JSONObject.NULL)
         put("updated_at", snapshot.updatedAtEpochMillis)
         put("last_transition", snapshot.lastTransition)
+        put("last_subway_alight", snapshot.lastSubwayAlight?.let { info ->
+            JSONObject()
+                .put("journey_id", info.journeyId.name)
+                .put("station_name", info.stationName)
+                .put("door_side", info.doorSide)
+                .put("arrived_at", info.arrivedAtEpochMillis)
+        } ?: JSONObject.NULL)
         val rows = JSONArray()
         snapshot.journeys.values.forEach { progress ->
             val row = JSONObject()
@@ -210,6 +226,9 @@ class TravelRepository private constructor(context: Context) {
                 .put("planned_subway_text", progress.plannedSubwayText)
                 .put("bus_two_stop_alert_sent", progress.busTwoStopAlertSent)
                 .put("bus_one_stop_alert_sent", progress.busOneStopAlertSent)
+                .put("subway_two_stop_alert_sent", progress.subwayTwoStopAlertSent)
+                .put("subway_one_stop_alert_sent", progress.subwayOneStopAlertSent)
+                .put("subway_destination_reached_at", progress.subwayDestinationReachedAtEpochMillis ?: JSONObject.NULL)
             val arrivals = JSONArray()
             progress.arrivalVehicles.forEach { item ->
                 arrivals.put(JSONObject()
@@ -245,6 +264,16 @@ class TravelRepository private constructor(context: Context) {
     }
 
     private fun decode(json: JSONObject): TravelSnapshot {
+        val lastSubwayAlight = json.optJSONObject("last_subway_alight")?.let { value ->
+            val journeyId = runCatching { JourneyId.valueOf(value.optString("journey_id")) }.getOrNull()
+                ?: return@let null
+            SubwayAlightInfo(
+                journeyId = journeyId,
+                stationName = value.optString("station_name"),
+                doorSide = value.optString("door_side"),
+                arrivedAtEpochMillis = value.optLong("arrived_at")
+            )
+        }
         val journeys = mutableMapOf<JourneyId, LegProgress>()
         val rows = json.optJSONArray("journeys") ?: JSONArray()
         for (i in 0 until rows.length()) {
@@ -288,7 +317,10 @@ class TravelRepository private constructor(context: Context) {
                 arrivalFetchedAtEpochMillis = row.nullableLong("arrival_fetched_at"),
                 plannedSubwayText = row.optString("planned_subway_text"),
                 busTwoStopAlertSent = row.optBoolean("bus_two_stop_alert_sent", false),
-                busOneStopAlertSent = row.optBoolean("bus_one_stop_alert_sent", false)
+                busOneStopAlertSent = row.optBoolean("bus_one_stop_alert_sent", false),
+                subwayTwoStopAlertSent = row.optBoolean("subway_two_stop_alert_sent", false),
+                subwayOneStopAlertSent = row.optBoolean("subway_one_stop_alert_sent", false),
+                subwayDestinationReachedAtEpochMillis = row.nullableLong("subway_destination_reached_at")
             )
         }
         val schedules = mutableMapOf<JourneyId, KtxSchedule>()
@@ -312,6 +344,7 @@ class TravelRepository private constructor(context: Context) {
             activeJourneyId = active,
             journeys = journeys,
             ktxSchedules = schedules,
+            lastSubwayAlight = lastSubwayAlight,
             updatedAtEpochMillis = json.optLong("updated_at", 0L),
             lastTransition = json.optString("last_transition")
         )

@@ -558,7 +558,8 @@ class TransitTrackingService : Service() {
 
     private fun refreshBusArrivalIfDue(progress: com.cobra.dev1new.domain.LegProgress) {
         val now = System.currentTimeMillis()
-        if (busFetchInFlight || now - lastBusFetchAt < BUS_API_INTERVAL_MS) return
+        val interval = if (isDaejeon514(progress)) BUS_514_API_INTERVAL_MS else BUS_API_INTERVAL_MS
+        if (busFetchInFlight || now - lastBusFetchAt < interval) return
         if (!keyVault.isConfigured()) return
         busFetchInFlight = true
         lastBusFetchAt = now
@@ -577,6 +578,10 @@ class TransitTrackingService : Service() {
             }
         }
     }
+
+    private fun isDaejeon514(progress: com.cobra.dev1new.domain.LegProgress): Boolean =
+        progress.journeyId in setOf(JourneyId.COMMUTE, JourneyId.RETURN) &&
+            RouteCatalog.journey(progress.journeyId).legs.getOrNull(progress.legIndex)?.id in setOf("commute_514", "return_514")
 
     private fun refreshPlannedSubwayIfDue(progress: com.cobra.dev1new.domain.LegProgress) {
         val now = System.currentTimeMillis()
@@ -607,9 +612,34 @@ class TransitTrackingService : Service() {
             .let { if (it < 0) stops.lastIndex else it }
             .coerceIn(0, stops.lastIndex)
         if (targetIndex > progress.stopIndex) repository.updateStopIndex(targetIndex, now)
+        // `targetIndex` is the current/next station from the one fixed train timetable.
+        // Use <= rather than == so a delayed 20-second service tick cannot silently skip
+        // the two-station alert.  The persisted reducer markers still allow each threshold
+        // to vibrate only once across Activity/service recreation.
+        val remainingBeforeDestination = (stops.lastIndex - targetIndex).coerceAtLeast(0)
+        if (remainingBeforeDestination in 1..2 &&
+            repository.markSubwayPreArrivalAlert(2, now) is com.cobra.dev1new.domain.TransitionResult.Applied
+        ) {
+            postEvent("지하철 하차 2정거장 전", "${stops.last()}까지 2정거장 남았습니다", 12)
+        }
+        if (remainingBeforeDestination == 1 &&
+            repository.markSubwayPreArrivalAlert(1, now) is com.cobra.dev1new.domain.TransitionResult.Applied
+        ) {
+            postEvent("지하철 하차 1정거장 전", "다음 역은 ${stops.last()}입니다", 11)
+        }
         val finalArrival = trip.arrivalsEpochMillis.lastOrNull() ?: return
-        // The selected live schedule is immutable after the user taps board; do not pick another train.
-        if (now > finalArrival) {
+        val destinationReachedAt = if (targetIndex == stops.lastIndex) {
+            when (val result = repository.markSubwayDestinationReached(now)) {
+                is com.cobra.dev1new.domain.TransitionResult.Applied ->
+                    result.snapshot.activeProgress()?.subwayDestinationReachedAtEpochMillis
+                is com.cobra.dev1new.domain.TransitionResult.Rejected -> progress.subwayDestinationReachedAtEpochMillis
+            }
+        } else null
+        // Keep "1개/목적역/문 방향" on the Now Bar long enough to read before the
+        // next leg replaces it.  The selected timetable remains immutable throughout.
+        if (now >= finalArrival && destinationReachedAt != null &&
+            now - destinationReachedAt >= SUBWAY_DESTINATION_DISPLAY_HOLD_MS
+        ) {
             val result = repository.autoAlight(now)
             if (result is com.cobra.dev1new.domain.TransitionResult.Applied) {
                 postEvent("지하철 목적역 도착", "${stops.last()} · 시간표 기준 자동 하차")
@@ -686,7 +716,9 @@ class TransitTrackingService : Service() {
         private const val LOCATION_INTERVAL_MS = 5_000L
         private const val TICK_INTERVAL_MS = 20_000L
         private const val BUS_API_INTERVAL_MS = 30_000L
+        private const val BUS_514_API_INTERVAL_MS = 20_000L
         private const val SUBWAY_REFRESH_INTERVAL_MS = 20_000L
+        private const val SUBWAY_DESTINATION_DISPLAY_HOLD_MS = 40_000L
         private const val BUS_PROBE_WINDOW_MS = 7_000L
         private const val BUS_MAX_ACCURACY_METERS = 80.0f
         private const val BUS_ROUTE_CORRIDOR_METERS = 250.0

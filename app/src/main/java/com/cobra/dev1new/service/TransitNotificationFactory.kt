@@ -14,6 +14,7 @@ import com.cobra.dev1new.domain.JourneyId
 import com.cobra.dev1new.domain.KtxScheduleResolver
 import com.cobra.dev1new.domain.LegPhase
 import com.cobra.dev1new.domain.RouteCatalog
+import com.cobra.dev1new.domain.subwayAlightDoorSide
 import com.cobra.dev1new.domain.TravelSnapshot
 import com.cobra.dev1new.domain.TransportKind
 
@@ -136,7 +137,7 @@ internal object TransitNotificationFactory {
                 val arrival = train?.arrivalsEpochMillis?.lastOrNull()
                 val destination = leg.destination.removeSuffix("역")
                 val title = "${KtxScheduleResolver.displayClock(arrival)} $destination".trim()
-                val direction = if (progress.journeyId == JourneyId.COMMUTE) "왼쪽" else "오른쪽"
+                val direction = subwayAlightDoorSide(progress.journeyId)
                 // The onboard count is inclusive: current station + all
                 // intermediate stations + destination.  Bus progress uses
                 // that same meaning even though its stored index is the last

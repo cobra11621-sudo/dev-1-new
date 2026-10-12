@@ -5,7 +5,9 @@ enum class JourneyId(val label: String, val tabLabel: String) {
     COMMUTE("출근", "출근"),
     RETURN("퇴근", "퇴근"),
     HOSPITAL_OUTBOUND("병원 가는 길", "병원"),
-    HOSPITAL_RETURN("돌아오는 길", "병원")
+    HOSPITAL_RETURN("돌아오는 길", "병원"),
+    DAEJEON_DENTAL_OUTBOUND("서울플란트 치과 가는 길", "병원"),
+    DAEJEON_DENTAL_RETURN("서울플란트 치과에서 돌아오는 길", "병원")
 }
 
 data class GeoPoint(val latitude: Double, val longitude: Double)
@@ -172,7 +174,44 @@ object RouteCatalog {
         )
     )
 
-    val all = listOf(commute, returning, hospitalOutbound, hospitalReturn)
+    val daejeonDentalOutbound = JourneyDefinition(
+        id = JourneyId.DAEJEON_DENTAL_OUTBOUND,
+        legs = listOf(
+            TransportLeg(
+                id = "daejeon_dental_outbound", kind = TransportKind.BUS,
+                displayName = "316·617번 버스", origin = "한밭초등학교",
+                destination = "아이빌딩 (서울플란트 치과)", routeNumber = "316·617",
+                stops = listOf("한밭초등학교", "크로바아파트", "시청역", "시청·교육청", "아이빌딩"),
+                routePoints = listOf(
+                    GeoPoint(36.3551065, 127.3951275), GeoPoint(36.3513918, 127.3932174),
+                    GeoPoint(36.3513905, 127.3879105), GeoPoint(36.3514016, 127.3835148),
+                    GeoPoint(36.3514005, 127.3804805)
+                )
+            )
+        )
+    )
+
+    val daejeonDentalReturn = JourneyDefinition(
+        id = JourneyId.DAEJEON_DENTAL_RETURN,
+        legs = listOf(
+            TransportLeg(
+                id = "daejeon_dental_return", kind = TransportKind.BUS,
+                displayName = "316·617번 버스", origin = "SK브로드밴드",
+                destination = "국화아파트", routeNumber = "316·617",
+                stops = listOf("SK브로드밴드", "대전광역시청", "시청역", "목련아파트", "국화아파트"),
+                routePoints = listOf(
+                    GeoPoint(36.3511855, 127.3804412), GeoPoint(36.3511715, 127.3850937),
+                    GeoPoint(36.3511828, 127.3886506), GeoPoint(36.3511805, 127.3922569),
+                    GeoPoint(36.3541180, 127.3953796)
+                )
+            )
+        )
+    )
+
+    val all = listOf(
+        commute, returning, hospitalOutbound, hospitalReturn,
+        daejeonDentalOutbound, daejeonDentalReturn
+    )
     private val byId = all.associateBy { it.id }
 
     fun journey(id: JourneyId): JourneyDefinition = requireNotNull(byId[id])

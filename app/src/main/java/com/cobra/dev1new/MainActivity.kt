@@ -12,6 +12,14 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -60,6 +68,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -89,6 +98,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import androidx.compose.ui.platform.LocalContext
 
 private val TransitCanvas = Color(0xFFF4F6FA)
 private val TransitIndigo = Color(0xFF3949AB)
@@ -349,6 +359,9 @@ private fun NativeCommuteApp(
     var boardingMessage by rememberSaveable { mutableStateOf("") }
     var apiKeyConfiguredState by remember(apiKeyConfigured) { mutableStateOf(apiKeyConfigured) }
     val titles = listOf("출근", "퇴근", "병원")
+    val selectTab: (Int) -> Unit = { targetTab ->
+        if (targetTab in titles.indices) tab = targetTab
+    }
     Scaffold(
         topBar = {
             Column {
@@ -370,7 +383,7 @@ private fun NativeCommuteApp(
                     titles.forEachIndexed { index, title ->
                         Tab(
                             selected = tab == index,
-                            onClick = { tab = index },
+                            onClick = { selectTab(index) },
                             text = { Text(title, fontWeight = if (tab == index) FontWeight.Bold else FontWeight.Medium) }
                         )
                     }
@@ -378,29 +391,66 @@ private fun NativeCommuteApp(
             }
         }
     ) { insets ->
-        Surface(Modifier.fillMaxSize().padding(insets), color = TransitCanvas) {
-            when (tab) {
-                0 -> JourneyScreen(
-                    snapshot, recoveryStatus, RouteCatalog.commute, onStart, onCancel, boardingJourney,
-                    if (boardingMessageJourney == JourneyId.COMMUTE) boardingMessage else "",
-                    apiKeyConfiguredState, { settingsOpen = true }, onRecover
-                ) { id ->
-                    boardingJourney = id
-                    boardingMessageJourney = id
-                    boardingMessage = ""
-                    onBoardSubway(id) { boardingMessage = it; if (!it.contains("찾는 중")) boardingJourney = null }
+        var horizontalDrag by remember { mutableStateOf(0f) }
+        Surface(
+            Modifier
+                .fillMaxSize()
+                .padding(insets)
+                .pointerInput(tab) {
+                    detectHorizontalDragGestures(
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            horizontalDrag += dragAmount
+                        },
+                        onDragEnd = {
+                            when {
+                                horizontalDrag <= -72f -> selectTab(tab + 1)
+                                horizontalDrag >= 72f -> selectTab(tab - 1)
+                            }
+                            horizontalDrag = 0f
+                        },
+                        onDragCancel = { horizontalDrag = 0f }
+                    )
                 }
-                1 -> JourneyScreen(
-                    snapshot, recoveryStatus, RouteCatalog.returning, onStart, onCancel, boardingJourney,
-                    if (boardingMessageJourney == JourneyId.RETURN) boardingMessage else "",
-                    apiKeyConfiguredState, { settingsOpen = true }, onRecover
-                ) { id ->
-                    boardingJourney = id
-                    boardingMessageJourney = id
-                    boardingMessage = ""
-                    onBoardSubway(id) { boardingMessage = it; if (!it.contains("찾는 중")) boardingJourney = null }
+            ,
+            color = TransitCanvas
+        ) {
+            AnimatedContent(
+                targetState = tab,
+                label = "journey-tab-slide",
+                transitionSpec = {
+                    if (targetState > initialState) {
+                        (slideInHorizontally(tween(300)) { it } + fadeIn(tween(180))) togetherWith
+                            (slideOutHorizontally(tween(300)) { -it } + fadeOut(tween(150)))
+                    } else {
+                        (slideInHorizontally(tween(300)) { -it } + fadeIn(tween(180))) togetherWith
+                            (slideOutHorizontally(tween(300)) { it } + fadeOut(tween(150)))
+                    }
                 }
-                else -> HospitalScreen(snapshot, onStart, onCancel, apiKeyConfiguredState) { settingsOpen = true }
+            ) { selectedTab ->
+                when (selectedTab) {
+                    0 -> JourneyScreen(
+                        snapshot, recoveryStatus, RouteCatalog.commute, onStart, onCancel, boardingJourney,
+                        if (boardingMessageJourney == JourneyId.COMMUTE) boardingMessage else "",
+                        apiKeyConfiguredState, { settingsOpen = true }, onRecover
+                    ) { id ->
+                        boardingJourney = id
+                        boardingMessageJourney = id
+                        boardingMessage = ""
+                        onBoardSubway(id) { boardingMessage = it; if (!it.contains("찾는 중")) boardingJourney = null }
+                    }
+                    1 -> JourneyScreen(
+                        snapshot, recoveryStatus, RouteCatalog.returning, onStart, onCancel, boardingJourney,
+                        if (boardingMessageJourney == JourneyId.RETURN) boardingMessage else "",
+                        apiKeyConfiguredState, { settingsOpen = true }, onRecover
+                    ) { id ->
+                        boardingJourney = id
+                        boardingMessageJourney = id
+                        boardingMessage = ""
+                        onBoardSubway(id) { boardingMessage = it; if (!it.contains("찾는 중")) boardingJourney = null }
+                    }
+                    else -> HospitalScreen(snapshot, onStart, onCancel, apiKeyConfiguredState) { settingsOpen = true }
+                }
             }
         }
     }
@@ -468,6 +518,21 @@ private fun JourneyScreen(
                 }
             }
         }
+        snapshot.lastSubwayAlight?.takeIf { it.journeyId == journey.id }?.let { alight ->
+            item {
+                Card(
+                    Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9))
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("최근 지하철 하차 정보", style = MaterialTheme.typography.labelSmall, color = Color(0xFF1B5E20), fontWeight = FontWeight.Bold)
+                        Text("${alight.stationName} · 내리는 문 ${alight.doorSide}", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                        Text("나우바를 놓친 경우에도 다음 출퇴근을 시작하기 전까지 확인할 수 있습니다.", style = MaterialTheme.typography.bodySmall, color = Color(0xFF33691E))
+                    }
+                }
+            }
+        }
         item {
             val progress = snapshot.journeys[journey.id]
             RouteCard(
@@ -496,30 +561,21 @@ private fun HospitalScreen(
         contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item {
-            Card(
-                Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text("병원 경로는 방향별로 따로 관리", color = TransitIndigo, fontWeight = FontWeight.Bold)
-                    Text(
-                        "처음 탑승예정만 직접 시작하면 해당 방향 안에서 자동 탑승·하차합니다. 한쪽 완료로 반대 방향은 시작되지 않습니다.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
         if (!apiKeyConfigured) item { ApiKeyNotice(onOpenSettings) }
-        items(listOf(RouteCatalog.hospitalOutbound, RouteCatalog.hospitalReturn)) { journey ->
+        items(
+            listOf(
+                RouteCatalog.hospitalOutbound,
+                RouteCatalog.hospitalReturn,
+                RouteCatalog.daejeonDentalOutbound,
+                RouteCatalog.daejeonDentalReturn
+            )
+        ) { journey ->
             RouteCard(
                 snapshot, journey, snapshot.journeys[journey.id],
                 active = snapshot.activeJourneyId == journey.id,
                 anyActive = snapshot.activeJourneyId != null,
-                boarding = false, boardingMessage = "", onStart = { onStart(journey.id) }, onCancel = onCancel, onBoardSubway = {}
+                boarding = false, boardingMessage = "", onStart = { onStart(journey.id) }, onCancel = onCancel,
+                onBoardSubway = {}, showOverview = false
             )
         }
     }
@@ -536,12 +592,13 @@ private fun RouteCard(
     boardingMessage: String,
     onStart: () -> Unit,
     onCancel: () -> Unit,
-    onBoardSubway: () -> Unit
+    onBoardSubway: () -> Unit,
+    showOverview: Boolean = true
 ) {
     val progress = phaseProgress ?: LegProgress(journey.id, 0)
     val currentIndex = if (active) progress.legIndex else -1
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        JourneyOverviewCard(journey, active, anyActive)
+        if (showOverview) JourneyOverviewCard(journey, active, anyActive)
         journey.legs.forEachIndexed { index, leg ->
             val isCurrent = index == currentIndex
             val phase = when {
@@ -829,6 +886,7 @@ private fun KtxSettingsDialog(
     onDismiss: () -> Unit,
     onSave: (KtxSchedule?, KtxSchedule?, String?) -> Boolean
 ) {
+    val context = LocalContext.current
     var commute by remember { mutableStateOf(KtxForm.from(initialCommute)) }
     var returning by remember { mutableStateOf(KtxForm.from(initialReturn)) }
     var error by remember { mutableStateOf("") }

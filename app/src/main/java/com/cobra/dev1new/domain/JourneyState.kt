@@ -13,6 +13,19 @@ data class SubwayTripSelection(
     val departuresEpochMillis: List<Long>
 )
 
+data class SubwayAlightInfo(
+    val journeyId: JourneyId,
+    val stationName: String,
+    val doorSide: String,
+    val arrivedAtEpochMillis: Long
+)
+
+fun subwayAlightDoorSide(journeyId: JourneyId): String = when (journeyId) {
+    JourneyId.COMMUTE -> "왼쪽"
+    JourneyId.RETURN -> "오른쪽"
+    else -> "확인 필요"
+}
+
 data class KtxSchedule(
     val departureTime: String = "",
     val arrivalTime: String = "",
@@ -35,7 +48,12 @@ data class LegProgress(
     val arrivalFetchedAtEpochMillis: Long? = null,
     val plannedSubwayText: String = "",
     val busTwoStopAlertSent: Boolean = false,
-    val busOneStopAlertSent: Boolean = false
+    val busOneStopAlertSent: Boolean = false,
+    /** Persisted one-shot markers so a service restart cannot repeat subway alerts. */
+    val subwayTwoStopAlertSent: Boolean = false,
+    val subwayOneStopAlertSent: Boolean = false,
+    /** First timetable tick at the destination; keeps the final Now Bar visible before chaining. */
+    val subwayDestinationReachedAtEpochMillis: Long? = null
 )
 
 data class TravelSnapshot(
@@ -43,6 +61,7 @@ data class TravelSnapshot(
     val activeJourneyId: JourneyId? = null,
     val journeys: Map<JourneyId, LegProgress> = emptyMap(),
     val ktxSchedules: Map<JourneyId, KtxSchedule> = emptyMap(),
+    val lastSubwayAlight: SubwayAlightInfo? = null,
     val updatedAtEpochMillis: Long = 0L,
     val lastTransition: String = ""
 ) {
@@ -203,7 +222,10 @@ object JourneyReducer {
             boardedAtEpochMillis = nowEpochMillis,
             selectedSubwayTrip = subwayTrip,
             busTwoStopAlertSent = false,
-            busOneStopAlertSent = false
+            busOneStopAlertSent = false,
+            subwayTwoStopAlertSent = false,
+            subwayOneStopAlertSent = false,
+            subwayDestinationReachedAtEpochMillis = null
         )
         return TransitionResult.Applied(
             current.copy(
@@ -271,6 +293,59 @@ object JourneyReducer {
         ))
     }
 
+    /** Mark a subway 2-/1-station-before alert atomically for exactly one vibration each. */
+    fun markSubwayPreArrivalAlert(
+        current: TravelSnapshot,
+        threshold: Int,
+        nowEpochMillis: Long
+    ): TransitionResult {
+        val progress = current.activeProgress()
+            ?: return TransitionResult.Rejected(current, "활성 여정이 없습니다.")
+        val leg = RouteCatalog.journey(progress.journeyId).legs[progress.legIndex]
+        if (progress.phase != LegPhase.ONBOARD || leg.kind != TransportKind.SUBWAY) {
+            return TransitionResult.Rejected(current, "지하철 탑승 중이 아닙니다.")
+        }
+        val alreadySent = when (threshold) {
+            2 -> progress.subwayTwoStopAlertSent
+            1 -> progress.subwayOneStopAlertSent
+            else -> return TransitionResult.Rejected(current, "지원하지 않는 알림 기준입니다.")
+        }
+        if (alreadySent) return TransitionResult.Rejected(current, "이미 보낸 하차 전 알림입니다.")
+        val updated = current.journeys.toMutableMap()
+        updated[progress.journeyId] = when (threshold) {
+            2 -> progress.copy(subwayTwoStopAlertSent = true)
+            else -> progress.copy(subwayOneStopAlertSent = true)
+        }
+        return TransitionResult.Applied(current.copy(
+            journeys = updated,
+            updatedAtEpochMillis = nowEpochMillis,
+            lastTransition = "subway_${threshold}_stops_alerted"
+        ))
+    }
+
+    /** Starts the short final-station display hold without changing the active subway leg. */
+    fun markSubwayDestinationReached(
+        current: TravelSnapshot,
+        nowEpochMillis: Long
+    ): TransitionResult {
+        val progress = current.activeProgress()
+            ?: return TransitionResult.Rejected(current, "활성 여정이 없습니다.")
+        val leg = RouteCatalog.journey(progress.journeyId).legs[progress.legIndex]
+        if (progress.phase != LegPhase.ONBOARD || leg.kind != TransportKind.SUBWAY) {
+            return TransitionResult.Rejected(current, "지하철 탑승 중이 아닙니다.")
+        }
+        if (progress.subwayDestinationReachedAtEpochMillis != null) {
+            return TransitionResult.Applied(current)
+        }
+        val updated = current.journeys.toMutableMap()
+        updated[progress.journeyId] = progress.copy(subwayDestinationReachedAtEpochMillis = nowEpochMillis)
+        return TransitionResult.Applied(current.copy(
+            journeys = updated,
+            updatedAtEpochMillis = nowEpochMillis,
+            lastTransition = "subway_destination_display_started"
+        ))
+    }
+
     /** Automatic alighting and automatic next-plan creation happen atomically. */
     fun autoAlight(current: TravelSnapshot, nowEpochMillis: Long): TransitionResult {
         val progress = current.activeProgress()
@@ -278,7 +353,16 @@ object JourneyReducer {
         if (progress.phase != LegPhase.ONBOARD) {
             return TransitionResult.Rejected(current, "하차할 탑승 구간이 없습니다.")
         }
-        return advanceToNextPlan(current, progress, nowEpochMillis, "auto_alighted")
+        val leg = RouteCatalog.journey(progress.journeyId).legs[progress.legIndex]
+        val withAlightInfo = if (leg.kind == TransportKind.SUBWAY) {
+            current.copy(lastSubwayAlight = SubwayAlightInfo(
+                journeyId = progress.journeyId,
+                stationName = leg.destination,
+                doorSide = subwayAlightDoorSide(progress.journeyId),
+                arrivedAtEpochMillis = nowEpochMillis
+            ))
+        } else current
+        return advanceToNextPlan(withAlightInfo, progress, nowEpochMillis, "auto_alighted")
     }
 
     /**

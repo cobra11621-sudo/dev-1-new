@@ -69,6 +69,25 @@ class JourneyReducerTest {
     }
 
     @Test
+    fun daejeonDentalDirectionsAreIndependentAndShareBothBusChoices() {
+        val outbound = RouteCatalog.journey(JourneyId.DAEJEON_DENTAL_OUTBOUND).legs.single()
+        val returning = RouteCatalog.journey(JourneyId.DAEJEON_DENTAL_RETURN).legs.single()
+
+        assertEquals("한밭초등학교", outbound.origin)
+        assertEquals("아이빌딩 (서울플란트 치과)", outbound.destination)
+        assertEquals("SK브로드밴드", returning.origin)
+        assertEquals("국화아파트", returning.destination)
+        assertEquals("316·617", outbound.routeNumber)
+        assertEquals("316·617", returning.routeNumber)
+
+        var state = applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.DAEJEON_DENTAL_OUTBOUND, 1_000L))
+        state = applied(JourneyReducer.autoBoard(state, 2_000L))
+        state = applied(JourneyReducer.autoAlight(state, 3_000L))
+        assertEquals(LegPhase.COMPLETE, state.journeys[JourneyId.DAEJEON_DENTAL_OUTBOUND]?.phase)
+        assertEquals(null, state.journeys[JourneyId.DAEJEON_DENTAL_RETURN])
+    }
+
+    @Test
     fun cancellingPlanLeavesNoActiveJourneyAndCanStartAgain() {
         var state = applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.RETURN, 1_000L))
         state = applied(JourneyReducer.cancelPlan(state, 2_000L))
@@ -102,6 +121,48 @@ class JourneyReducerTest {
         assertTrue(JourneyReducer.markBusPreArrivalAlert(state, 2, 4_000L) is TransitionResult.Rejected)
         state = applied(JourneyReducer.markBusPreArrivalAlert(state, 1, 5_000L))
         assertTrue(state.activeProgress()?.busOneStopAlertSent == true)
+    }
+
+    @Test
+    fun subwayPreArrivalAlertsArePersistedAsSeparateOneShotMarkers() {
+        var state = applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.COMMUTE, 1_000L))
+        state = applied(JourneyReducer.autoBoard(state, 2_000L))
+        state = applied(JourneyReducer.autoAlight(state, 3_000L))
+        state = applied(JourneyReducer.autoBoard(state, 4_000L))
+        state = applied(JourneyReducer.autoAlight(state, 5_000L))
+        val subway = RouteCatalog.journey(JourneyId.COMMUTE).legs[state.activeProgress()!!.legIndex]
+        val trip = SubwayTripSelection(
+            serviceDate = "2026-10-12",
+            trainKey = "test",
+            departureEpochMillis = 6_000L,
+            arrivalsEpochMillis = List(subway.stops.size) { 6_000L + it * 60_000L },
+            departuresEpochMillis = List(subway.stops.size) { 6_010L + it * 60_000L }
+        )
+        state = applied(JourneyReducer.manualBoardSubway(state, trip, 6_000L))
+        state = applied(JourneyReducer.markSubwayPreArrivalAlert(state, 2, 7_000L))
+        assertTrue(state.activeProgress()?.subwayTwoStopAlertSent == true)
+        assertTrue(JourneyReducer.markSubwayPreArrivalAlert(state, 2, 8_000L) is TransitionResult.Rejected)
+        state = applied(JourneyReducer.markSubwayPreArrivalAlert(state, 1, 9_000L))
+        assertTrue(state.activeProgress()?.subwayOneStopAlertSent == true)
+    }
+
+    @Test
+    fun subwayDestinationRecordsDoorSideBeforeAutomaticNextLeg() {
+        var state = applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.COMMUTE, 1_000L))
+        state = applied(JourneyReducer.autoBoard(state, 2_000L))
+        state = applied(JourneyReducer.autoAlight(state, 3_000L))
+        state = applied(JourneyReducer.autoBoard(state, 4_000L))
+        state = applied(JourneyReducer.autoAlight(state, 5_000L))
+        val subway = RouteCatalog.journey(JourneyId.COMMUTE).legs[state.activeProgress()!!.legIndex]
+        val trip = SubwayTripSelection("2026-10-12", "test", 6_000L,
+            List(subway.stops.size) { 6_000L + it * 60_000L },
+            List(subway.stops.size) { 6_010L + it * 60_000L })
+        state = applied(JourneyReducer.manualBoardSubway(state, trip, 6_000L))
+        state = applied(JourneyReducer.markSubwayDestinationReached(state, 7_000L))
+        assertEquals(7_000L, state.activeProgress()?.subwayDestinationReachedAtEpochMillis)
+        state = applied(JourneyReducer.autoAlight(state, 8_000L))
+        assertEquals("안심역", state.lastSubwayAlight?.stationName)
+        assertEquals("왼쪽", state.lastSubwayAlight?.doorSide)
     }
 
     @Test
