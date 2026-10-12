@@ -14,3 +14,6 @@ local.properties
 .idea/
 *.iml
 Thumbs.db
+
+# PC별 실행 배치는 Git으로 동기화하지 않는다.
+*.bat
