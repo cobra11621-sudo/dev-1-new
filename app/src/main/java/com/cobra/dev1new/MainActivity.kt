@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.PaddingValues
@@ -69,13 +70,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.cobra.dev1new.data.ApiKeyVault
 import com.cobra.dev1new.data.SubwayScheduleClient
 import com.cobra.dev1new.domain.ArrivalFormatter
@@ -92,6 +96,9 @@ import com.cobra.dev1new.domain.TravelSnapshot
 import com.cobra.dev1new.domain.TransitionResult
 import com.cobra.dev1new.domain.TransportKind
 import com.cobra.dev1new.service.TransitTrackingService
+import com.cobra.dev1new.service.KtxRouteRecorderService
+import com.cobra.dev1new.service.KtxRouteStore
+import com.cobra.dev1new.service.KtxRouteRecordStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -158,6 +165,7 @@ class MainActivity : ComponentActivity() {
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var pendingJourneyId: JourneyId? = null
     private var pendingRecoveryJourneyId: JourneyId? = null
+    private var pendingKtxRecordingStart = false
     private var restorePermissionWarningShown = false
 
     private val accessLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
@@ -168,8 +176,10 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         val requested = pendingJourneyId
         val requestedRecovery = pendingRecoveryJourneyId
+        val requestedKtxRecording = pendingKtxRecordingStart
         pendingJourneyId = null
         pendingRecoveryJourneyId = null
+        pendingKtxRecordingStart = false
         if (!fineGranted || !notificationsGranted) {
             val missing = buildString {
                 if (!fineGranted) append("정확한 위치 권한")
@@ -181,6 +191,7 @@ class MainActivity : ComponentActivity() {
         }
         requested?.let(::beginJourney)
         requestedRecovery?.let(::beginRecovery)
+        if (requestedKtxRecording) beginKtxRouteRecording()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -189,6 +200,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = TransitColors) {
                 val snapshot by repository.state.collectAsState()
                 val recoveryStatus by repository.recoveryStatus.collectAsState()
+                var ktxRecordStatus by remember { mutableStateOf(KtxRouteStore(this).status()) }
                 NativeCommuteApp(
                     snapshot = snapshot,
                     recoveryStatus = recoveryStatus,
@@ -201,6 +213,19 @@ class MainActivity : ComponentActivity() {
                     },
                     onBoardSubway = ::boardSubway,
                     onRecover = ::requestRecovery,
+                    ktxRecordStatus = ktxRecordStatus,
+                    onStartKtxRecording = {
+                        requestKtxRouteRecording()
+                        ktxRecordStatus = KtxRouteStore(this).status()
+                    },
+                    onStopKtxRecording = {
+                        KtxRouteRecorderService.stop(this)
+                        ktxRecordStatus = KtxRouteStore(this).status()
+                    },
+                    onExportKtxRecording = {
+                        exportKtxRouteRecording()
+                        ktxRecordStatus = KtxRouteStore(this).status()
+                    },
                     onSaveSettings = { commute, returning, apiKey ->
                         val keySaved = apiKey == null || runCatching {
                             apiKeyVault.save(apiKey)
@@ -309,6 +334,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun requestKtxRouteRecording() {
+        val fineGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val notificationsGranted = Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (fineGranted && notificationsGranted) { beginKtxRouteRecording(); return }
+        pendingKtxRecordingStart = true
+        accessLauncher.launch(buildList {
+            if (!fineGranted) { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
+            if (Build.VERSION.SDK_INT >= 33 && !notificationsGranted) add(Manifest.permission.POST_NOTIFICATIONS)
+        }.toTypedArray())
+    }
+
+    private fun beginKtxRouteRecording() = runCatching { KtxRouteRecorderService.start(this) }
+        .onFailure { Toast.makeText(this, "KTX 경로 기록을 시작하지 못했습니다.", Toast.LENGTH_LONG).show() }
+
+    private fun exportKtxRouteRecording() {
+        val file = KtxRouteStore(this).status().file
+        if (file == null) { Toast.makeText(this, "내보낼 KTX 경로 기록이 없습니다.", Toast.LENGTH_LONG).show(); return }
+        val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("application/json")
+            .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "KTX 경로 기록 내보내기"))
+    }
+
     private fun boardSubway(journeyId: JourneyId, onDone: (String) -> Unit) {
         val tappedAt = System.currentTimeMillis()
         uiScope.launch {
@@ -350,6 +398,10 @@ private fun NativeCommuteApp(
     onCancel: () -> Unit,
     onBoardSubway: (JourneyId, (String) -> Unit) -> Unit,
     onRecover: (JourneyId) -> Unit,
+    ktxRecordStatus: KtxRouteRecordStatus,
+    onStartKtxRecording: () -> Unit,
+    onStopKtxRecording: () -> Unit,
+    onExportKtxRecording: () -> Unit,
     onSaveSettings: (KtxSchedule?, KtxSchedule?, String?) -> Boolean
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -373,6 +425,12 @@ private fun NativeCommuteApp(
                         }
                     },
                     actions = {
+                        TextButton(onClick = if (ktxRecordStatus.recording) onStopKtxRecording else onStartKtxRecording) {
+                            Text(if (ktxRecordStatus.recording) "기록 종료" else "KTX 기록", fontWeight = FontWeight.SemiBold)
+                        }
+                        if (!ktxRecordStatus.recording && ktxRecordStatus.file != null) {
+                            TextButton(onClick = onExportKtxRecording) { Text("내보내기", fontWeight = FontWeight.SemiBold) }
+                        }
                         TextButton(onClick = { settingsOpen = true }) {
                             Text("설정", fontWeight = FontWeight.SemiBold)
                         }
@@ -692,7 +750,7 @@ private fun RouteCard(
                                         ) else {
                                             val platformText = schedule.platform.takeIf(String::isNotBlank)?.let { "${it}번홈" } ?: "승차홈 직접 입력 필요"
                                             Text("${schedule.trainIdentifier} · ${schedule.departureTime} 출발 · $platformText", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                                            Text("출발 시각·경로 근접·시속 20km 이상 조건으로 자동 탑승합니다", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text("출발 시각·시속 20km 이상·GPS 정확도 100m 이하 조건으로 자동 탑승합니다", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
                                     TransportKind.SUBWAY -> {
@@ -878,6 +936,15 @@ private data class KtxForm(
     companion object { fun from(value: KtxSchedule) = KtxForm(value.departureTime, value.arrivalTime, value.trainIdentifier, value.platform, value.car, value.seat) }
 }
 
+/** Keep only four clock digits; insert the separator after HH for typing and paste. */
+private fun formatKtxTimeInput(value: String): String {
+    val digits = value.filter(Char::isDigit).take(4)
+    return when {
+        digits.length <= 2 -> digits
+        else -> "${digits.take(2)}:${digits.drop(2)}"
+    }
+}
+
 @Composable
 private fun KtxSettingsDialog(
     initialCommute: KtxSchedule,
@@ -895,7 +962,15 @@ private fun KtxSettingsDialog(
     var isApiKeyConfigured by remember(initialApiKeyConfigured) { mutableStateOf(initialApiKeyConfigured) }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxWidth(0.87f).heightIn(max = 740.dp), shape = MaterialTheme.shapes.large, tonalElevation = 6.dp) {
-            Column(Modifier.verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // The dialog must shrink for the IME and retain enough bottom space
+            // to scroll the focused KTX/API field fully above the keyboard.
+            Column(
+                Modifier
+                    .verticalScroll(rememberScrollState())
+                    .imePadding()
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Text("교통 정보 설정", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("버스 실시간 도착정보", style = MaterialTheme.typography.titleSmall, color = TransitIndigo, fontWeight = FontWeight.Bold)
                 Text("API 키 · ${if (isApiKeyConfigured) "설정됨" else "미설정"}", fontWeight = FontWeight.SemiBold)
@@ -946,12 +1021,38 @@ private fun KtxSettingsDialog(
 
 @Composable
 private fun KtxEditor(title: String, form: KtxForm, onChange: (KtxForm) -> Unit) {
+    var departureInput by remember(form.departure) {
+        mutableStateOf(TextFieldValue(form.departure, selection = TextRange(form.departure.length)))
+    }
+    var arrivalInput by remember(form.arrival) {
+        mutableStateOf(TextFieldValue(form.arrival, selection = TextRange(form.arrival.length)))
+    }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, fontWeight = FontWeight.SemiBold)
         OutlinedTextField(form.train, { onChange(form.copy(train = it)) }, Modifier.fillMaxWidth(), label = { Text("열차번호 (예: KTX-산천 054)") }, singleLine = true)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(form.departure, { onChange(form.copy(departure = it)) }, Modifier.weight(1f), label = { Text("출발 HH:mm") }, singleLine = true)
-            OutlinedTextField(form.arrival, { onChange(form.copy(arrival = it)) }, Modifier.weight(1f), label = { Text("도착 HH:mm") }, singleLine = true)
+            OutlinedTextField(
+                departureInput,
+                { incoming ->
+                    val formatted = formatKtxTimeInput(incoming.text)
+                    departureInput = TextFieldValue(formatted, selection = TextRange(formatted.length))
+                    onChange(form.copy(departure = formatted))
+                },
+                Modifier.weight(1f),
+                label = { Text("출발 HH:mm") },
+                singleLine = true
+            )
+            OutlinedTextField(
+                arrivalInput,
+                { incoming ->
+                    val formatted = formatKtxTimeInput(incoming.text)
+                    arrivalInput = TextFieldValue(formatted, selection = TextRange(formatted.length))
+                    onChange(form.copy(arrival = formatted))
+                },
+                Modifier.weight(1f),
+                label = { Text("도착 HH:mm") },
+                singleLine = true
+            )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(form.platform, { onChange(form.copy(platform = it)) }, Modifier.weight(1f), label = { Text("승차홈") }, singleLine = true)

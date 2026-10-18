@@ -21,7 +21,8 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="unspecified">
+            android:screenOrientation="unspecified"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -31,6 +32,17 @@
             android:name=".service.TransitTrackingService"
             android:exported="false"
             android:foregroundServiceType="location" />
+        <service
+            android:name=".service.KtxRouteRecorderService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/route_export_paths" />
+        </provider>
         <receiver
             android:name=".service.TransitActionReceiver"
             android:exported="false" />

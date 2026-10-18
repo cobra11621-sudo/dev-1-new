@@ -168,10 +168,6 @@ object TransitGpsRules {
         val departure = scheduledDepartureEpochMillis ?: return false
         val arrival = scheduledArrivalEpochMillis ?: return false
         val accuracy = fix.accuracyMeters ?: return false
-        // KTX is a fixed personal itinerary.  Do not use a coarse drawn rail
-        // line for boarding: optional stops such as 서대구 can make that line
-        // misleading.  A valid timetable window and train-level speed are the
-        // deliberate boarding signal.
         return nowEpochMillis in departure..arrival &&
             fix.speedKmh >= 20.0f &&
             accuracy <= 100.0f

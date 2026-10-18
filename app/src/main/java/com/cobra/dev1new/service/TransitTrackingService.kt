@@ -354,6 +354,27 @@ class TransitTrackingService : Service() {
         val subwayNearby = subwayIndex >= 0 && subwayPoint != null &&
             accuracy <= SUBWAY_RECOVERY_RADIUS_METERS &&
             RouteGeometry.distance(fix.latitude, fix.longitude, subwayPoint.latitude, subwayPoint.longitude) <= SUBWAY_RECOVERY_RADIUS_METERS
+        // A return-direction recovery requested by the user at Daejeon Station
+        // means the next leg is the 514 boarding plan.  It is not evidence that
+        // the user has already boarded a bus, even when the GPS point happens
+        // to project near 목척교, the second route point.
+        val returnBusIndex = route.legs.indexOfFirst { it.id == "return_514" }
+        val returnBusBoardingPoint = route.legs.getOrNull(returnBusIndex)?.routePoints?.firstOrNull()
+        val returnBusStopNearby = journeyId == JourneyId.RETURN && returnBusIndex >= 0 &&
+            returnBusBoardingPoint != null &&
+            RouteGeometry.distance(
+                fix.latitude, fix.longitude,
+                returnBusBoardingPoint.latitude, returnBusBoardingPoint.longitude
+            ) <= RETURN_BUS_STOP_BOARDING_ZONE_METERS
+        // Daejeon Subway Station exit 4: verified against the map's exit marker.
+        // This is deliberately a separate, smaller zone from the bus-stop zone.
+        val returnSubwayExit4Nearby = journeyId == JourneyId.RETURN &&
+            RouteGeometry.distance(
+                fix.latitude, fix.longitude,
+                DAEJEON_SUBWAY_EXIT_4_LATITUDE,
+                DAEJEON_SUBWAY_EXIT_4_LONGITUDE
+            ) <= DAEJEON_SUBWAY_EXIT_4_BOARDING_ZONE_METERS
+        val returnBusBoardingNearby = returnBusStopNearby || returnSubwayExit4Nearby
         val ktxIndex = route.legs.indexOfFirst { it.kind == TransportKind.KTX }
         val ktxProjection = ktxIndex.takeIf { it >= 0 }?.let { index ->
             RouteGeometry.project(route.legs[index].routePoints, fix.latitude, fix.longitude)
@@ -374,6 +395,7 @@ class TransitTrackingService : Service() {
 
         val applied = when {
             subwayNearby -> repository.recoverAt(journeyId, subwayIndex, LegPhase.PLANNED, 0, now)
+            returnBusBoardingNearby -> repository.recoverAt(journeyId, returnBusIndex, LegPhase.PLANNED, 0, now)
             ktxMatched -> repository.recoverAt(
                 journeyId, ktxIndex, LegPhase.ONBOARD,
                 ktxProjection?.stopIndex(route.legs[ktxIndex].stops.size) ?: 0, now
@@ -727,6 +749,10 @@ class TransitTrackingService : Service() {
         private const val KTX_GPS_RECOVERY_GAP_MS = 30_000L
         private const val RECOVERY_MAX_ACCURACY_METERS = 100.0f
         private const val SUBWAY_RECOVERY_RADIUS_METERS = 50.0
+        private const val RETURN_BUS_STOP_BOARDING_ZONE_METERS = 500.0
+        private const val DAEJEON_SUBWAY_EXIT_4_LATITUDE = 36.3320032
+        private const val DAEJEON_SUBWAY_EXIT_4_LONGITUDE = 127.4334484
+        private const val DAEJEON_SUBWAY_EXIT_4_BOARDING_ZONE_METERS = 300.0
         private const val RECOVERY_TIMEOUT_MS = 90_000L
         private const val RECOVERY_PROGRESS_INTERVAL_MS = 2_000L
         // Event cards must remain readable after the short two-pulse vibration.

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The exported JSON lives directly under filesDir.  Expose that private
+         directory through FileProvider so Android can grant a one-time
+         read-only URI to the share target. -->
+    <files-path name="internal_route_exports" path="." />
+</paths>
