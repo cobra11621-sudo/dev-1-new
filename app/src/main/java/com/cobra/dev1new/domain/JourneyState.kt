@@ -52,6 +52,8 @@ data class LegProgress(
     /** Persisted one-shot markers so a service restart cannot repeat subway alerts. */
     val subwayTwoStopAlertSent: Boolean = false,
     val subwayOneStopAlertSent: Boolean = false,
+    /** Survives service restarts so GPS-recovery feedback is emitted once per trip. */
+    val ktxGpsRecoveryNoticeSent: Boolean = false,
     /** First timetable tick at the destination; keeps the final Now Bar visible before chaining. */
     val subwayDestinationReachedAtEpochMillis: Long? = null
 )
@@ -70,6 +72,13 @@ data class TravelSnapshot(
 
 /** Transient UI feedback for an explicit recovery request; never persisted as journey progress. */
 data class RecoveryStatus(
+    val journeyId: JourneyId,
+    val headline: String,
+    val detail: String
+)
+
+/** Transient on-demand explanation of the current auto-boarding decision. */
+data class BoardingDiagnostic(
     val journeyId: JourneyId,
     val headline: String,
     val detail: String
@@ -383,6 +392,24 @@ object JourneyReducer {
         return advanceToNextPlan(current, progress, nowEpochMillis, "ktx_scheduled_arrival")
     }
 
+    fun markKtxGpsRecoveryNoticeSent(
+        current: TravelSnapshot,
+        nowEpochMillis: Long
+    ): TransitionResult {
+        val progress = current.activeProgress()
+            ?: return TransitionResult.Rejected(current, "활성 여정이 없습니다.")
+        if (progress.ktxGpsRecoveryNoticeSent) {
+            return TransitionResult.Rejected(current, "KTX GPS 정상화 안내를 이미 표시했습니다.")
+        }
+        val journeys = current.journeys.toMutableMap()
+        journeys[progress.journeyId] = progress.copy(ktxGpsRecoveryNoticeSent = true)
+        return TransitionResult.Applied(current.copy(
+            journeys = journeys,
+            updatedAtEpochMillis = nowEpochMillis,
+            lastTransition = "ktx_gps_recovery_notice_sent"
+        ))
+    }
+
     private fun advanceToNextPlan(
         current: TravelSnapshot,
         progress: LegProgress,
@@ -412,6 +439,7 @@ object JourneyReducer {
             legIndex = nextIndex,
             phase = LegPhase.PLANNED,
             plannedAtEpochMillis = nowEpochMillis,
+            ktxGpsRecoveryNoticeSent = progress.ktxGpsRecoveryNoticeSent,
             journeyStartedAtEpochMillis = progress.journeyStartedAtEpochMillis
                 ?: progress.plannedAtEpochMillis
                 ?: progress.boardedAtEpochMillis

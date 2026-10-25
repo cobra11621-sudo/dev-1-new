@@ -140,7 +140,12 @@ class KtxRouteStore(private val context: Context) {
         }
         val root = runCatching { JSONObject(output.readText()) }.getOrElse { return false }
         val point = JSONObject().put("latitude", location.latitude).put("longitude", location.longitude)
-            .put("epoch_millis", location.time).put("speed_kmh", if (location.hasSpeed()) location.speed * 3.6 else JSONObject.NULL)
+            .put("epoch_millis", location.time)
+            // Keep the raw Android source facts. This lets us compare an
+            // outbound and return trip instead of guessing why speed was absent.
+            .put("provider", location.provider ?: JSONObject.NULL)
+            .put("has_speed", location.hasSpeed())
+            .put("speed_kmh", if (location.hasSpeed()) location.speed * 3.6 else JSONObject.NULL)
             .put("accuracy_meters", if (location.hasAccuracy()) location.accuracy else JSONObject.NULL)
         root.getJSONArray("points").put(point)
         output.writeText(root.toString())

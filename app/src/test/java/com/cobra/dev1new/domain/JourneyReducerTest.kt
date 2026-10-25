@@ -208,6 +208,18 @@ class JourneyReducerTest {
     }
 
     @Test
+    fun ktxGpsRecoveryNoticeIsPersistedAndCannotRepeatAfterTheNextLegStarts() {
+        var state = applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.RETURN, 1_000L))
+        state = applied(JourneyReducer.markKtxGpsRecoveryNoticeSent(state, 2_000L))
+        assertTrue(state.activeProgress()?.ktxGpsRecoveryNoticeSent == true)
+        assertTrue(JourneyReducer.markKtxGpsRecoveryNoticeSent(state, 3_000L) is TransitionResult.Rejected)
+
+        state = applied(JourneyReducer.autoBoard(state, 4_000L))
+        state = applied(JourneyReducer.autoAlight(state, 5_000L))
+        assertTrue(state.activeProgress()?.ktxGpsRecoveryNoticeSent == true)
+    }
+
+    @Test
     fun gpsRecoveryMakesOneCanonicalJourneyStateForEverySurface() {
         var state = applied(JourneyReducer.startInitialPlan(TravelSnapshot(), JourneyId.COMMUTE, 1_000L))
         state = applied(JourneyReducer.recoverAt(
