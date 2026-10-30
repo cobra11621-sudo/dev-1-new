@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.cobra.dev1new.domain.JourneyId
 import com.cobra.dev1new.domain.JourneyReducer
+import com.cobra.dev1new.domain.BoardingDiagnostic
 import com.cobra.dev1new.domain.KtxSchedule
 import com.cobra.dev1new.domain.LegPhase
 import com.cobra.dev1new.domain.LegProgress
@@ -61,11 +62,17 @@ class TravelRepository private constructor(context: Context) {
     val state: StateFlow<TravelSnapshot> = mutableState.asStateFlow()
     private val mutableRecoveryStatus = MutableStateFlow<RecoveryStatus?>(null)
     val recoveryStatus: StateFlow<RecoveryStatus?> = mutableRecoveryStatus.asStateFlow()
+    private val mutableBoardingDiagnostic = MutableStateFlow<BoardingDiagnostic?>(null)
+    val boardingDiagnostic: StateFlow<BoardingDiagnostic?> = mutableBoardingDiagnostic.asStateFlow()
 
     fun snapshot(): TravelSnapshot = synchronized(mutex) { mutableState.value }
 
     fun setRecoveryStatus(status: RecoveryStatus?) {
         mutableRecoveryStatus.value = status
+    }
+
+    fun setBoardingDiagnostic(diagnostic: BoardingDiagnostic?) {
+        mutableBoardingDiagnostic.value = diagnostic
     }
 
     fun startInitialPlan(journeyId: JourneyId, nowEpochMillis: Long): TransitionResult =
@@ -115,6 +122,9 @@ class TravelRepository private constructor(context: Context) {
 
     fun advancePlannedKtxAtScheduledArrival(nowEpochMillis: Long): TransitionResult =
         update { JourneyReducer.advancePlannedKtxAtScheduledArrival(it, nowEpochMillis) }
+
+    fun markKtxGpsRecoveryNoticeSent(nowEpochMillis: Long): TransitionResult =
+        update { JourneyReducer.markKtxGpsRecoveryNoticeSent(it, nowEpochMillis) }
 
     fun resetForNewDay(nowEpochMillis: Long): TransitionResult =
         update { JourneyReducer.resetForNewDay(it, nowEpochMillis) }
@@ -228,6 +238,7 @@ class TravelRepository private constructor(context: Context) {
                 .put("bus_one_stop_alert_sent", progress.busOneStopAlertSent)
                 .put("subway_two_stop_alert_sent", progress.subwayTwoStopAlertSent)
                 .put("subway_one_stop_alert_sent", progress.subwayOneStopAlertSent)
+                .put("ktx_gps_recovery_notice_sent", progress.ktxGpsRecoveryNoticeSent)
                 .put("subway_destination_reached_at", progress.subwayDestinationReachedAtEpochMillis ?: JSONObject.NULL)
             val arrivals = JSONArray()
             progress.arrivalVehicles.forEach { item ->
@@ -320,6 +331,7 @@ class TravelRepository private constructor(context: Context) {
                 busOneStopAlertSent = row.optBoolean("bus_one_stop_alert_sent", false),
                 subwayTwoStopAlertSent = row.optBoolean("subway_two_stop_alert_sent", false),
                 subwayOneStopAlertSent = row.optBoolean("subway_one_stop_alert_sent", false),
+                ktxGpsRecoveryNoticeSent = row.optBoolean("ktx_gps_recovery_notice_sent", false),
                 subwayDestinationReachedAtEpochMillis = row.nullableLong("subway_destination_reached_at")
             )
         }

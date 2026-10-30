@@ -42,6 +42,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog as ComposeAlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -74,6 +75,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -83,6 +85,7 @@ import androidx.core.content.FileProvider
 import com.cobra.dev1new.data.ApiKeyVault
 import com.cobra.dev1new.data.SubwayScheduleClient
 import com.cobra.dev1new.domain.ArrivalFormatter
+import com.cobra.dev1new.domain.BoardingDiagnostic
 import com.cobra.dev1new.domain.JourneyDefinition
 import com.cobra.dev1new.domain.JourneyId
 import com.cobra.dev1new.domain.KtxSchedule
@@ -200,6 +203,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = TransitColors) {
                 val snapshot by repository.state.collectAsState()
                 val recoveryStatus by repository.recoveryStatus.collectAsState()
+                val boardingDiagnostic by repository.boardingDiagnostic.collectAsState()
                 var ktxRecordStatus by remember { mutableStateOf(KtxRouteStore(this).status()) }
                 NativeCommuteApp(
                     snapshot = snapshot,
@@ -213,6 +217,9 @@ class MainActivity : ComponentActivity() {
                     },
                     onBoardSubway = ::boardSubway,
                     onRecover = ::requestRecovery,
+                    boardingDiagnostic = boardingDiagnostic,
+                    onCheckBoardingConditions = ::requestBoardingConditions,
+                    onDismissBoardingDiagnostic = { repository.setBoardingDiagnostic(null) },
                     ktxRecordStatus = ktxRecordStatus,
                     onStartKtxRecording = {
                         requestKtxRouteRecording()
@@ -334,6 +341,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun requestBoardingConditions(journeyId: JourneyId) {
+        val fineGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!fineGranted) {
+            Toast.makeText(this, "탑승 조건을 확인하려면 위치 권한이 필요합니다.", Toast.LENGTH_LONG).show()
+            return
+        }
+        repository.setBoardingDiagnostic(BoardingDiagnostic(journeyId, "탑승 조건 확인 중", "새 GPS 위치를 요청했습니다."))
+        TransitTrackingService.checkBoardingConditions(this, journeyId)
+    }
+
     private fun requestKtxRouteRecording() {
         val fineGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val notificationsGranted = Build.VERSION.SDK_INT < 33 ||
@@ -393,11 +410,14 @@ class MainActivity : ComponentActivity() {
 private fun NativeCommuteApp(
     snapshot: TravelSnapshot,
     recoveryStatus: RecoveryStatus?,
+    boardingDiagnostic: BoardingDiagnostic?,
     apiKeyConfigured: Boolean,
     onStart: (JourneyId) -> Unit,
     onCancel: () -> Unit,
     onBoardSubway: (JourneyId, (String) -> Unit) -> Unit,
     onRecover: (JourneyId) -> Unit,
+    onCheckBoardingConditions: (JourneyId) -> Unit,
+    onDismissBoardingDiagnostic: () -> Unit,
     ktxRecordStatus: KtxRouteRecordStatus,
     onStartKtxRecording: () -> Unit,
     onStopKtxRecording: () -> Unit,
@@ -413,6 +433,14 @@ private fun NativeCommuteApp(
     val titles = listOf("출근", "퇴근", "병원")
     val selectTab: (Int) -> Unit = { targetTab ->
         if (targetTab in titles.indices) tab = targetTab
+    }
+    boardingDiagnostic?.let { diagnostic ->
+        ComposeAlertDialog(
+            onDismissRequest = onDismissBoardingDiagnostic,
+            title = { Text(diagnostic.headline) },
+            text = { Text(diagnostic.detail) },
+            confirmButton = { TextButton(onClick = onDismissBoardingDiagnostic) { Text("닫기") } }
+        )
     }
     Scaffold(
         topBar = {
@@ -490,7 +518,7 @@ private fun NativeCommuteApp(
                     0 -> JourneyScreen(
                         snapshot, recoveryStatus, RouteCatalog.commute, onStart, onCancel, boardingJourney,
                         if (boardingMessageJourney == JourneyId.COMMUTE) boardingMessage else "",
-                        apiKeyConfiguredState, { settingsOpen = true }, onRecover
+                        apiKeyConfiguredState, { settingsOpen = true }, onRecover, onCheckBoardingConditions
                     ) { id ->
                         boardingJourney = id
                         boardingMessageJourney = id
@@ -500,7 +528,7 @@ private fun NativeCommuteApp(
                     1 -> JourneyScreen(
                         snapshot, recoveryStatus, RouteCatalog.returning, onStart, onCancel, boardingJourney,
                         if (boardingMessageJourney == JourneyId.RETURN) boardingMessage else "",
-                        apiKeyConfiguredState, { settingsOpen = true }, onRecover
+                        apiKeyConfiguredState, { settingsOpen = true }, onRecover, onCheckBoardingConditions
                     ) { id ->
                         boardingJourney = id
                         boardingMessageJourney = id
@@ -542,6 +570,7 @@ private fun JourneyScreen(
     apiKeyConfigured: Boolean,
     onOpenSettings: () -> Unit,
     onRecover: (JourneyId) -> Unit,
+    onCheckBoardingConditions: (JourneyId) -> Unit,
     startBoarding: (JourneyId) -> Unit
 ) {
     LazyColumn(
@@ -551,18 +580,41 @@ private fun JourneyScreen(
     ) {
         if (!apiKeyConfigured) item { ApiKeyNotice(onOpenSettings) }
         item {
-            OutlinedButton(
-                onClick = { onRecover(journey.id) },
-                modifier = Modifier.fillMaxWidth()
+            val progress = snapshot.journeys[journey.id]
+            val currentLeg = progress?.let { RouteCatalog.journey(journey.id).legs.getOrNull(it.legIndex) }
+            val showBoardingCheck = snapshot.activeJourneyId == journey.id &&
+                progress?.phase == LegPhase.PLANNED &&
+                currentLeg?.kind in setOf(TransportKind.BUS, TransportKind.KTX)
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("현재 위치로 경로 복구")
+                OutlinedButton(
+                    onClick = { onRecover(journey.id) },
+                    modifier = if (showBoardingCheck) Modifier.weight(1f) else Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "현재 위치로 경로 복구",
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
+                    )
+                }
+                if (showBoardingCheck) {
+                    OutlinedButton(
+                        onClick = { onCheckBoardingConditions(journey.id) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            "탑승 조건 확인",
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
+                        )
+                    }
+                }
             }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "실외에서 누르면 새 GPS 위치로 버스·지하철·KTX 상태를 다시 맞춥니다.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
         if (recoveryStatus?.journeyId == journey.id) item {
             Card(
@@ -750,7 +802,7 @@ private fun RouteCard(
                                         ) else {
                                             val platformText = schedule.platform.takeIf(String::isNotBlank)?.let { "${it}번홈" } ?: "승차홈 직접 입력 필요"
                                             Text("${schedule.trainIdentifier} · ${schedule.departureTime} 출발 · $platformText", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                                            Text("출발 시각·시속 20km 이상·GPS 정확도 100m 이하 조건으로 자동 탑승합니다", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text("KTX 경로 2km 이내·시속 20km 이상이면 자동 탑승합니다", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
                                     TransportKind.SUBWAY -> {

@@ -33,14 +33,36 @@ data class JourneyDefinition(
 
 /** Immutable route metadata. Transit progress and UI never own competing copies of it. */
 object RouteCatalog {
-    private val ktxCommutePoints = listOf(
-        GeoPoint(36.3322, 127.4341),
-        GeoPoint(36.3010, 127.5680),
-        GeoPoint(36.1740, 127.7860),
-        GeoPoint(36.1136, 128.1815),
-        GeoPoint(35.9900, 128.3970),
-        GeoPoint(35.8798, 128.6283)
+    // Return KTX route recorded by the user on 2026-10-23.  Points are kept
+    // about 1.5 km apart so the 2 km boarding corridor follows the real route
+    // instead of a few long, straight map guesses.
+    private val ktxReturnRecordedPoints = listOf(
+        GeoPoint(35.8790599, 128.6282357), GeoPoint(35.8752319, 128.6102066),
+        GeoPoint(35.8768392, 128.5921694), GeoPoint(35.8794815, 128.5744554),
+        GeoPoint(35.8807920, 128.5564084), GeoPoint(35.8906159, 128.5104482),
+        GeoPoint(35.9144097, 128.5074926), GeoPoint(35.9577044, 128.5005955),
+        GeoPoint(35.9748588, 128.4736571), GeoPoint(35.9885320, 128.4536104),
+        GeoPoint(36.0010275, 128.4243511), GeoPoint(36.0195511, 128.4029738),
+        GeoPoint(36.0343800, 128.3829058), GeoPoint(36.0396253, 128.3674394),
+        GeoPoint(36.0428636, 128.3457145), GeoPoint(36.0587200, 128.3437392),
+        GeoPoint(36.0693079, 128.3233240), GeoPoint(36.0853897, 128.2735769),
+        GeoPoint(36.0899741, 128.2326974), GeoPoint(36.0936927, 128.2119184),
+        GeoPoint(36.1116803, 128.1848632), GeoPoint(36.1173204, 128.1690209),
+        GeoPoint(36.1211975, 128.1485525), GeoPoint(36.1311092, 128.1313806),
+        GeoPoint(36.1312427, 128.1115615), GeoPoint(36.1363597, 128.0814914),
+        GeoPoint(36.1387770, 128.0633107), GeoPoint(36.1390541, 128.0414875),
+        GeoPoint(36.1452378, 127.9120578), GeoPoint(36.1467969, 127.8944948),
+        GeoPoint(36.1613663, 127.8228707), GeoPoint(36.1718556, 127.7976520),
+        GeoPoint(36.1852903, 127.7770719), GeoPoint(36.1947798, 127.7584782),
+        GeoPoint(36.2072765, 127.7412082), GeoPoint(36.2213177, 127.7189501),
+        GeoPoint(36.2386269, 127.6830564), GeoPoint(36.2426225, 127.6611122),
+        GeoPoint(36.2547720, 127.6431527), GeoPoint(36.2564747, 127.6218614),
+        GeoPoint(36.2604357, 127.5872492), GeoPoint(36.2821444, 127.5336332),
+        GeoPoint(36.2933052, 127.5183068), GeoPoint(36.3142779, 127.4729745),
+        GeoPoint(36.3172899, 127.4519651), GeoPoint(36.3253293, 127.4379554),
+        GeoPoint(36.3318313, 127.4342008)
     )
+    private val ktxCommutePoints = ktxReturnRecordedPoints.reversed()
     private val ktxStopsCommute = listOf(
         "대전역", "옥천 지역", "영동 지역", "김천·구미 지역", "칠곡 지역", "동대구역"
     )

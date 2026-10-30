@@ -38,6 +38,29 @@ class SubwayCsvTimetableParserTest {
     }
 
     @Test
+    fun upcomingTripsUseTheSameWholeTrainSelectionAsTheBoardingAction() {
+        // The usable train's origin time is stored in its complete train column,
+        // while the raw departure row contains a later time for another train.
+        // The planned screen must still offer 18:03, just as manual boarding does.
+        val csv = """
+            요일별,역명,구분,1001,1003
+            평일(하),A역,도착,18:03:00,18:07:00
+            평일(하),A역,출발,,18:07:00
+            평일(하),B역,도착,18:10:00,18:14:00
+            평일(하),B역,출발,18:10:30,18:14:30
+        """.trimIndent()
+        val now = LocalDateTime.of(2026, 10, 5, 18, 0)
+
+        val displayed = SubwayCsvTimetableParser.upcomingTrips(csv, "A역", listOf("A역", "B역"), now, limit = 2)
+        val selected = SubwayCsvTimetableParser.selectTrain(csv, "A역", listOf("A역", "B역"), now)
+
+        assertEquals(listOf("1001", "1003"), displayed.map { it.trainNumber })
+        assertEquals(LocalDateTime.of(2026, 10, 5, 18, 3), displayed.first().originDeparture)
+        assertEquals(displayed.first().trainNumber, selected.trainNumber)
+        assertEquals(displayed.first().originDeparture, selected.originDeparture)
+    }
+
+    @Test
     fun saturdayUsesSaturdayRowsAndLateNightSelectedTrainRollsToNextDate() {
         val saturday = LocalDateTime.of(2026, 10, 10, 9, 1)
         val saturdayTimes = SubwayCsvTimetableParser.upcoming(fixture, "A", saturday, limit = 2)

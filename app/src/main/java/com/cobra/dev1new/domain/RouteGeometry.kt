@@ -159,19 +159,15 @@ object TransitGpsRules {
         return minOf(destinationDistance, exitDistance) <= BUS_DESTINATION_RADIUS_METERS
     }
 
-    fun isKtxBoardingFix(
-        fix: GeoFix,
-        nowEpochMillis: Long,
-        scheduledDepartureEpochMillis: Long?,
-        scheduledArrivalEpochMillis: Long?
-    ): Boolean {
-        val departure = scheduledDepartureEpochMillis ?: return false
-        val arrival = scheduledArrivalEpochMillis ?: return false
-        val accuracy = fix.accuracyMeters ?: return false
-        return nowEpochMillis in departure..arrival &&
-            fix.speedKmh >= 20.0f &&
-            accuracy <= 100.0f
-    }
+    /**
+     * KTX auto boarding intentionally has only two conditions: the fix must be
+     * close to the configured Daejeon↔Dongdaegu KTX route and moving at least
+     * 20 km/h. Timetable and GPS-accuracy gates must not block boarding.
+     */
+    fun isKtxBoardingFix(fix: GeoFix, distanceFromKtxRouteMeters: Double?): Boolean =
+        distanceFromKtxRouteMeters != null &&
+            distanceFromKtxRouteMeters <= KTX_BOARDING_ROUTE_RADIUS_METERS &&
+            fix.speedKmh >= 20.0f
 
     fun isKtxArrivalFix(
         fix: GeoFix,
@@ -181,4 +177,6 @@ object TransitGpsRules {
         return accuracy <= 250.0f && fix.speedKmh < 5.0f &&
             RouteGeometry.distance(fix.latitude, fix.longitude, destination.latitude, destination.longitude) <= 2_000.0
     }
+
+    private const val KTX_BOARDING_ROUTE_RADIUS_METERS = 2_000.0
 }

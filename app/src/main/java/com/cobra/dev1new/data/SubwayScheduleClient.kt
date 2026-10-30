@@ -48,10 +48,13 @@ class SubwayScheduleClient(private val context: Context) {
                 java.time.Instant.ofEpochMilli(nowEpochMillis), ZoneId.systemDefault()
             )
             val csv = readCsv(assetName(journeyId))
-            SubwayCsvTimetableParser.upcoming(csv, leg.stops.first(), now, limit = 2)
-                .map { departure ->
+            // The planned display must be built from the exact same whole-train
+            // records used when the user taps "탑승 처리".  Reading only the
+            // first raw "출발" row can omit an otherwise selectable train.
+            SubwayCsvTimetableParser.upcomingTrips(csv, leg.stops.first(), leg.stops, now, limit = 2)
+                .map { trip ->
                     UpcomingSubwayTrain(
-                        departureAtEpochMillis = departure.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli(),
+                        departureAtEpochMillis = trip.originDeparture.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli(),
                         destinationLabel = null
                     )
                 }
@@ -157,6 +160,36 @@ internal object SubwayCsvTimetableParser {
         routeStations: List<String>,
         referenceTime: LocalDateTime
     ): SelectedSubwayCsvTrain {
+        return tripCandidates(csvText, originStation, routeStations, referenceTime)
+            .minByOrNull { candidate ->
+                kotlin.math.abs(Duration.between(referenceTime, candidate.originDeparture).toMillis())
+            }
+            ?: throw SubwayScheduleException("CSV에서 ${originStation} 출발 열차를 찾지 못했습니다.")
+    }
+
+    /**
+     * Next trains for the boarding screen.  This deliberately shares the
+     * full-train candidate construction with [selectTrain], so the train a
+     * commuter sees before boarding is not different from the train selected
+     * by the boarding action a moment later.
+     */
+    fun upcomingTrips(
+        csvText: String,
+        originStation: String,
+        routeStations: List<String>,
+        referenceTime: LocalDateTime,
+        limit: Int
+    ): List<SelectedSubwayCsvTrain> = tripCandidates(csvText, originStation, routeStations, referenceTime)
+        .filter { !it.originDeparture.isBefore(referenceTime) }
+        .sortedBy { it.originDeparture }
+        .take(limit.coerceAtLeast(0))
+
+    private fun tripCandidates(
+        csvText: String,
+        originStation: String,
+        routeStations: List<String>,
+        referenceTime: LocalDateTime
+    ): List<SelectedSubwayCsvTrain> {
         val (header, rows) = table(csvText)
         val weekdayLabel = dayLabel(referenceTime.toLocalDate())
         val serviceRows = rows.filter { it["요일별"].orEmpty().startsWith(weekdayLabel) }
@@ -174,16 +207,11 @@ internal object SubwayCsvTimetableParser {
         if (originRows.isEmpty()) throw SubwayScheduleException("CSV에서 ${originStation} 운행시각을 찾지 못했습니다.")
 
         val allOriginRows = serviceRows.filter { normalize(it["역명"].orEmpty()) == origin }
-        val candidates = header.filterNot { it.trim().removePrefix("\uFEFF") in metadataColumns }
+        val candidateTimes = header.filterNot { it.trim().removePrefix("\uFEFF") in metadataColumns }
             .mapNotNull { trainNumber ->
                 val times = allOriginRows.mapNotNull { row -> serviceDateTime(row[trainNumber], referenceTime) }
                 if (times.isEmpty()) null else trainNumber to times
             }
-        val chosen = candidates.minByOrNull { (_, times) ->
-            times.minOf { kotlin.math.abs(Duration.between(referenceTime, it).toMillis()) }
-        } ?: throw SubwayScheduleException("CSV에서 ${originStation} 출발 열차를 찾지 못했습니다.")
-        val (trainNumber, originTimes) = chosen
-        val originDeparture = originTimes.maxOrNull()!!
 
         val rowsByStationAndKind = mutableMapOf<Pair<String, String>, Map<String, String>>()
         serviceRows.forEach { row ->
@@ -192,28 +220,29 @@ internal object SubwayCsvTimetableParser {
             rowsByStationAndKind[station to kind] = row
         }
 
-        var previousTime: LocalDateTime? = null
-        val events = routeStations.map { routeStation ->
-            val station = normalize(routeStation)
-            val values = linkedMapOf<String, LocalDateTime?>()
-            for (kind in listOf("도착", "출발")) {
-                val row = rowsByStationAndKind[station to kind]
-                var value = row?.let { serviceDateTime(it[trainNumber], referenceTime) }
-                val previous = previousTime
-                if (value != null && previous != null) {
-                    while (value!!.isBefore(previous.minusHours(2))) value = value!!.plusDays(1)
+        return candidateTimes.mapNotNull { (trainNumber, originTimes) ->
+            val originDeparture = originTimes.maxOrNull() ?: return@mapNotNull null
+            var previousTime: LocalDateTime? = null
+            val events = routeStations.mapNotNull { routeStation ->
+                val station = normalize(routeStation)
+                val values = linkedMapOf<String, LocalDateTime?>()
+                for (kind in listOf("도착", "출발")) {
+                    val row = rowsByStationAndKind[station to kind]
+                    var value = row?.let { serviceDateTime(it[trainNumber], referenceTime) }
+                    val previous = previousTime
+                    if (value != null && previous != null) {
+                        while (value!!.isBefore(previous.minusHours(2))) value = value!!.plusDays(1)
+                    }
+                    values[kind] = value
+                    if (value != null) previousTime = value
                 }
-                values[kind] = value
-                if (value != null) previousTime = value
+                val rawArrival = values["도착"] ?: values["출발"]
+                val rawDeparture = values["출발"] ?: values["도착"]
+                if (rawArrival == null || rawDeparture == null) return@mapNotNull null
+                SubwayStationEvent(routeStation, minOf(rawArrival, rawDeparture), maxOf(rawArrival, rawDeparture))
             }
-            val rawArrival = values["도착"] ?: values["출발"]
-            val rawDeparture = values["출발"] ?: values["도착"]
-            if (rawArrival == null || rawDeparture == null) {
-                throw SubwayScheduleException("${trainNumber} 열차의 ${routeStation} 도착·출발 시각이 없습니다.")
-            }
-            SubwayStationEvent(routeStation, minOf(rawArrival, rawDeparture), maxOf(rawArrival, rawDeparture))
+            if (events.size != routeStations.size) null else SelectedSubwayCsvTrain(trainNumber, originDeparture, events)
         }
-        return SelectedSubwayCsvTrain(trainNumber, originDeparture, events)
     }
 
     private fun dayLabel(date: LocalDate): String = when (date.dayOfWeek.value) {
