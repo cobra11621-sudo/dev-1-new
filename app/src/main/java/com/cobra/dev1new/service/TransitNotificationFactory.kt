@@ -28,7 +28,10 @@ internal data class TransitNotificationText(
 )
 
 internal object TransitNotificationFactory {
-    const val CHANNEL_ID = "dev1native_transit_live"
+    // New ID is intentional. Android keeps a user's existing channel
+    // importance immutable, so the former LOW channel would remain inside
+    // Samsung's "more notifications" section after an app update.
+    const val CHANNEL_ID = "dev1native_transit_live_v2"
     const val ALERT_CHANNEL_ID = "dev1native_transit_events"
     const val NOTIFICATION_ID = 4200
     const val EVENT_NOTIFICATION_ID = 4201
@@ -40,7 +43,9 @@ internal object TransitNotificationFactory {
         val manager = context.getSystemService(NotificationManager::class.java)
         if (manager.getNotificationChannel(CHANNEL_ID) == null) {
             manager.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "${context.getString(R.string.notification_channel_transit)} · 이동 중", NotificationManager.IMPORTANCE_LOW)
+                // DEFAULT keeps the live commute card in the primary shade
+                // without turning it into the HIGH-priority arrival alert.
+                NotificationChannel(CHANNEL_ID, "${context.getString(R.string.notification_channel_transit)} · 이동 중", NotificationManager.IMPORTANCE_DEFAULT)
                     .apply {
                         setShowBadge(false)
                         description = "현재 대중교통 여정과 Now Bar"
@@ -145,16 +150,10 @@ internal object TransitNotificationFactory {
                 val subwayRemaining = (stops.lastIndex - stopIndex + 1).coerceAtLeast(1)
                 val atDestination = stopIndex == stops.lastIndex
                 val lower = if (atDestination) "${subwayRemaining}개/$current" else "${subwayRemaining}개/$current/$next"
-                // The door side is actionable only on arrival.  Showing it at
-                // every intermediate station makes the compact Now Bar noisy
-                // and falsely suggests that the user should alight now.
-                // Keep the expanded lock-screen body as route position only;
-                // Samsung's Now Bar lower line is shortCriticalText and is
-                // the sole compact surface that receives the door side.
+                // The door side is actionable only on arrival. Showing it at
+                // earlier stations makes the compact Now Bar noisy and falsely
+                // suggests that the user should alight now.
                 val shortCriticalText = if (atDestination) "$lower/$direction" else lower
-                // Samsung uses shortCriticalText for Now Bar. The expanded
-                // notification keeps the current/next route text without an
-                // arrival-door instruction, as agreed in the display contract.
                 TransitNotificationText(title, shortCriticalText, lower, stopIndex, stops.size.coerceAtLeast(1), false)
             }
             TransportKind.KTX -> {

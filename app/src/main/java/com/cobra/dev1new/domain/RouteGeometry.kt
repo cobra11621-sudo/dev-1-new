@@ -24,8 +24,21 @@ data class RouteProjection(
     val progressMeters: Double,
     val routeLengthMeters: Double
 ) {
+    /**
+     * Converts a point on the physical route into one of the small number of
+     * user-facing progress milestones.  The route may contain many dense GPS
+     * recording points, while the screen deliberately keeps only a few
+     * readable areas (for KTX: five intervals / six labels).  Segment index
+     * cannot be used here: after the recording became denser it reached the
+     * final display label within the first few physical segments.
+     */
     fun stopIndex(stopCount: Int): Int =
-        (segmentIndex + if (fraction >= 0.9) 1 else 0).coerceIn(0, (stopCount - 1).coerceAtLeast(0))
+        when {
+            stopCount <= 1 || routeLengthMeters <= 0.0 -> 0
+            else -> ((progressMeters / routeLengthMeters)
+                .coerceIn(0.0, 1.0) * (stopCount - 1)).toInt()
+                .coerceIn(0, stopCount - 1)
+        }
 }
 
 object RouteGeometry {

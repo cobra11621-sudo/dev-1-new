@@ -20,6 +20,20 @@ class RouteGeometryTest {
     }
 
     @Test
+    fun denseRouteUsesEvenMilestonesInsteadOfRawSegmentNumber() {
+        val denseRoute = (0..48).map { GeoPoint(36.0, 127.0 + it * 0.001) }
+        val early = RouteGeometry.project(denseRoute, 36.0, 127.004)!!
+        val middle = RouteGeometry.project(denseRoute, 36.0, 127.024)!!
+        val nearEnd = RouteGeometry.project(denseRoute, 36.0, 127.046)!!
+
+        // The screen has six labels (five intervals).  Raw segment numbers
+        // would have clipped the fourth recorded segment straight to index 5.
+        assertEquals(0, early.stopIndex(6))
+        assertEquals(2, middle.stopIndex(6))
+        assertEquals(4, nearEnd.stopIndex(6))
+    }
+
+    @Test
     fun busBoardingRequiresAccurateSustainedForwardMovement() {
         val firstFix = GeoFix(36.0, 127.0, 20f, 0f, 10_000L)
         val firstProjection = RouteGeometry.project(route, firstFix.latitude, firstFix.longitude)!!

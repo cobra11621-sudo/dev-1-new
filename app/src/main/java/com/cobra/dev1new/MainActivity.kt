@@ -773,14 +773,15 @@ private fun RouteCard(
                         }
                     }
                     Text("${leg.origin}  →  ${leg.destination}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    StopProgressRow(
-                        leg = leg,
-                        onboardDisplay = if (isCurrent && phase == LegPhase.ONBOARD) {
-                            onboardStopDisplay(leg, progress.stopIndex)
-                        } else {
-                            null
-                        }
-                    )
+                    // Route milestones are live boarding information.  Do not
+                    // show them while waiting to board: that state must show
+                    // the train/bus boarding details only.
+                    if (isCurrent && phase == LegPhase.ONBOARD) {
+                        StopProgressRow(
+                            leg = leg,
+                            onboardDisplay = onboardStopDisplay(leg, progress.stopIndex)
+                        )
+                    }
                     if (isCurrent && phase == LegPhase.PLANNED) {
                         Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.9f))) {
                             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -800,9 +801,23 @@ private fun RouteCard(
                                             "설정에서 KTX 열차번호와 출발·도착 시각을 입력해야 자동 탑승을 확인할 수 있습니다",
                                             style = MaterialTheme.typography.bodySmall
                                         ) else {
-                                            val platformText = schedule.platform.takeIf(String::isNotBlank)?.let { "${it}번홈" } ?: "승차홈 직접 입력 필요"
-                                            Text("${schedule.trainIdentifier} · ${schedule.departureTime} 출발 · $platformText", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                                            Text("KTX 경로 2km 이내·시속 20km 이상이면 자동 탑승합니다", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            // Planned KTX is a waiting card: show the complete
+                                            // reservation details, not live route progress.
+                                            Text(
+                                                "${schedule.trainIdentifier} · ${schedule.departureTime} 출발 → ${schedule.arrivalTime} 도착",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            val boardingDetails = buildList {
+                                                schedule.platform.takeIf(String::isNotBlank)?.let { add("${it}번홈") }
+                                                schedule.car.takeIf(String::isNotBlank)?.let { add("${it}호차") }
+                                                schedule.seat.takeIf(String::isNotBlank)?.let { add("${it}좌석") }
+                                            }
+                                            Text(
+                                                boardingDetails.joinToString(" · ").ifBlank { "승차홈·호차·좌석 직접 입력 필요" },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         }
                                     }
                                     TransportKind.SUBWAY -> {
