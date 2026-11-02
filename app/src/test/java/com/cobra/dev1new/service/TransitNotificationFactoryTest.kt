@@ -57,21 +57,29 @@ class TransitNotificationFactoryTest {
     }
 
     @Test
-    fun subway_terminal_keeps_the_door_side_only_in_the_now_bar_line() {
+    fun subway_target_door_side_appears_from_one_station_before_alighting_in_compact_form() {
         val commuteLeg = RouteCatalog.journey(JourneyId.COMMUTE).legs[2]
         val returningLeg = RouteCatalog.journey(JourneyId.RETURN).legs[1]
 
-        val commute = TransitNotificationFactory.text(
+        val commuteOneStopBefore = TransitNotificationFactory.text(
+            onboard(JourneyId.COMMUTE, 2, commuteLeg.stops.lastIndex - 1), true, ""
+        )
+        val commuteAtTarget = TransitNotificationFactory.text(
             onboard(JourneyId.COMMUTE, 2, commuteLeg.stops.lastIndex), true, ""
         )
-        val returning = TransitNotificationFactory.text(
+        val returningOneStopBefore = TransitNotificationFactory.text(
+            onboard(JourneyId.RETURN, 1, returningLeg.stops.lastIndex - 1), true, ""
+        )
+        val returningAtTarget = TransitNotificationFactory.text(
             onboard(JourneyId.RETURN, 1, returningLeg.stops.lastIndex), true, ""
         )
 
-        assertEquals("1개/안심역/왼쪽", commute.shortCriticalText)
-        assertEquals("1개/안심역", commute.body)
-        assertEquals("1개/동대구역/오른쪽", returning.shortCriticalText)
-        assertEquals("1개/동대구역", returning.body)
+        assertEquals("2개/각산역/안심역/왼쪽", commuteOneStopBefore.shortCriticalText)
+        assertEquals("1개/안심역/왼쪽", commuteAtTarget.shortCriticalText)
+        assertEquals("1개/안심역", commuteAtTarget.body)
+        assertEquals("2개/동구청역/동대구역/오른쪽", returningOneStopBefore.shortCriticalText)
+        assertEquals("1개/동대구역/오른쪽", returningAtTarget.shortCriticalText)
+        assertEquals("1개/동대구역", returningAtTarget.body)
     }
 
     @Test

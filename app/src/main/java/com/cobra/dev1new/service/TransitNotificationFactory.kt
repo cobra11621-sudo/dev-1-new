@@ -28,6 +28,16 @@ internal data class TransitNotificationText(
 )
 
 internal object TransitNotificationFactory {
+    /*
+     * DISPLAY CONTRACT — user-confirmed.
+     *
+     * PLANNED bus shows arrival information; PLANNED KTX shows train, times
+     * and seat; PLANNED subway shows selected or upcoming train plus transfer
+     * position. ONBOARD bus, KTX and subway show current and next location
+     * plus remaining count. App screens may be detailed; Now Bar/status uses
+     * shortCriticalText. GPS route data and state-transition work must not
+     * change these meanings without an explicit user request.
+     */
     // New ID is intentional. Android keeps a user's existing channel
     // importance immutable, so the former LOW channel would remain inside
     // Samsung's "more notifications" section after an app update.
@@ -150,10 +160,14 @@ internal object TransitNotificationFactory {
                 val subwayRemaining = (stops.lastIndex - stopIndex + 1).coerceAtLeast(1)
                 val atDestination = stopIndex == stops.lastIndex
                 val lower = if (atDestination) "${subwayRemaining}개/$current" else "${subwayRemaining}개/$current/$next"
-                // The door side is actionable only on arrival. Showing it at
-                // earlier stations makes the compact Now Bar noisy and falsely
-                // suggests that the user should alight now.
-                val shortCriticalText = if (atDestination) "$lower/$direction" else lower
+                // DISPLAY CONTRACT — subway alighting direction is tied to the
+                // route's target station, never merely to a route terminal.
+                // It becomes useful one station before alighting: the inclusive
+                // count is 2 at that point and 1 at the target.  Keep the
+                // full, unambiguous label "왼쪽" or "오른쪽"; even a
+                // narrow Now Bar still conveys the direction when truncated.
+                // GPS/route-geometry changes must not alter this rule.
+                val shortCriticalText = if (subwayRemaining <= 2) "$lower/$direction" else lower
                 TransitNotificationText(title, shortCriticalText, lower, stopIndex, stops.size.coerceAtLeast(1), false)
             }
             TransportKind.KTX -> {

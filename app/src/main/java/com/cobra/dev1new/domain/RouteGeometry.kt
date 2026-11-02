@@ -41,6 +41,11 @@ data class RouteProjection(
         }
 }
 
+/**
+ * Geometry converts a GPS fix into a route position. It owns neither boarding
+ * state nor user-facing wording; keep those contracts in TransitGpsRules,
+ * JourneyReducer, MainActivity and TransitNotificationFactory respectively.
+ */
 object RouteGeometry {
     fun project(points: List<GeoPoint>, latitude: Double, longitude: Double): RouteProjection? {
         if (points.size < 2) return null

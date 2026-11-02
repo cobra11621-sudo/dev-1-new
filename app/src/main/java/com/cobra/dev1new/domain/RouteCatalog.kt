@@ -31,7 +31,14 @@ data class JourneyDefinition(
     val subwayManualBoarding: Boolean = false
 )
 
-/** Immutable route metadata. Transit progress and UI never own competing copies of it. */
+/**
+ * Immutable route metadata. Transit progress and UI never own competing copies.
+ *
+ * PROTECTION BOUNDARY: routePoints are GPS judgement data only. Updating a
+ * recorded KTX or bus route may change route matching and progress calculation,
+ * but must not also change JourneyReducer transitions, display wording,
+ * notification wording, or subway door-direction rules.
+ */
 object RouteCatalog {
     // Return KTX route recorded by the user on 2026-10-23.  Points are kept
     // about 1.5 km apart so the 2 km boarding corridor follows the real route

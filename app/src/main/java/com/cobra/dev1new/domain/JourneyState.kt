@@ -89,7 +89,19 @@ sealed interface TransitionResult {
     data class Rejected(val snapshot: TravelSnapshot, val reason: String) : TransitionResult
 }
 
-/** Pure state transitions; UI, service, and notification code must all call this reducer. */
+/**
+ * TRANSIT BEHAVIOUR CONTRACT — user-confirmed operation.
+ *
+ * - One journey alone owns the active PLANNED or ONBOARD state.
+ * - BUS and KTX move from PLANNED to ONBOARD only through the tracking
+ *   service. SUBWAY is deliberately manual and pins one selected timetable
+ *   train.
+ * - ONBOARD to next leg or completion is performed only here, never by a
+ *   screen.
+ * - Route-coordinate or GPS-threshold work must not alter these transitions.
+ *
+ * UI, service, and notification code must all call this reducer.
+ */
 object JourneyReducer {
     fun startInitialPlan(
         current: TravelSnapshot,

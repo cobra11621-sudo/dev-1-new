@@ -773,9 +773,14 @@ private fun RouteCard(
                         }
                     }
                     Text("${leg.origin}  →  ${leg.destination}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    // Route milestones are live boarding information.  Do not
-                    // show them while waiting to board: that state must show
-                    // the train/bus boarding details only.
+                    // TRANSIT DISPLAY CONTRACT — keep this paired with
+                    // TransitNotificationFactory's notification contract.
+                    // PLANNED is boarding/waiting information only; ONBOARD is
+                    // live current/next-stop progress only. In particular,
+                    // planned KTX keeps the full reservation identifier on this
+                    // roomy card, while the notification may use its compact
+                    // number-only form. GPS route points must never alter this
+                    // distinction by themselves.
                     if (isCurrent && phase == LegPhase.ONBOARD) {
                         StopProgressRow(
                             leg = leg,

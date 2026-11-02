@@ -45,6 +45,13 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 
+/**
+ * GPS and timetable executor only. It evaluates the fixed BUS and KTX
+ * automatic conditions and SUBWAY timetable conditions, then asks
+ * JourneyReducer to make every state transition. Do not move state or display
+ * decisions into this service when editing coordinates, accuracy, speed or
+ * corridor thresholds.
+ */
 class TransitTrackingService : Service() {
     private lateinit var repository: com.cobra.dev1new.data.TravelRepository
     private lateinit var keyVault: ApiKeyVault
