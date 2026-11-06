@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.LocalDate
 
 private class TravelDatabase(context: Context) : SQLiteOpenHelper(
     context,
@@ -134,6 +135,21 @@ class TravelRepository private constructor(context: Context) {
             ktxSchedules = mutableState.value.ktxSchedules + (journeyId to schedule),
             updatedAtEpochMillis = nowEpochMillis,
             lastTransition = "ktx_schedule_saved"
+        )
+        persistSnapshot(next)
+        mutableState.value = next
+        next
+    }
+
+    /** Apply date-bound dev-3 ticket data without touching journey progress. */
+    fun syncExternalKtxTickets(tickets: List<ExternalKtxTicket>, nowEpochMillis: Long) = synchronized(mutex) {
+        val current = mutableState.value
+        val merged = KtxTicketStore.mergeActiveSchedules(current.ktxSchedules, tickets, LocalDate.now())
+        if (merged == current.ktxSchedules) return@synchronized current
+        val next = current.copy(
+            ktxSchedules = merged,
+            updatedAtEpochMillis = nowEpochMillis,
+            lastTransition = "ktx_ticket_sync"
         )
         persistSnapshot(next)
         mutableState.value = next
@@ -269,7 +285,8 @@ class TravelRepository private constructor(context: Context) {
                 .put("train_identifier", schedule.trainIdentifier)
                 .put("platform", schedule.platform)
                 .put("car", schedule.car)
-                .put("seat", schedule.seat))
+                .put("seat", schedule.seat)
+                .put("travel_date", schedule.travelDate))
         }
         put("ktx_schedules", schedules)
     }
@@ -346,7 +363,8 @@ class TravelRepository private constructor(context: Context) {
                 trainIdentifier = row.optString("train_identifier"),
                 platform = row.optString("platform"),
                 car = row.optString("car"),
-                seat = row.optString("seat")
+                seat = row.optString("seat"),
+                travelDate = row.optString("travel_date")
             )
         }
         val active = runCatching {

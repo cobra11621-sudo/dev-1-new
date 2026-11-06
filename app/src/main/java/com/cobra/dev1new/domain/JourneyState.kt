@@ -32,7 +32,9 @@ data class KtxSchedule(
     val trainIdentifier: String = "",
     val platform: String = "",
     val car: String = "",
-    val seat: String = ""
+    val seat: String = "",
+    /** Date carried with a dev-3 ticket; it is not an editable dev-1 setting. */
+    val travelDate: String = ""
 )
 
 data class LegProgress(

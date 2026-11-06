@@ -20,6 +20,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -48,6 +49,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -69,11 +71,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,6 +87,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.cobra.dev1new.data.ApiKeyVault
+import com.cobra.dev1new.data.KtxTicketStore
 import com.cobra.dev1new.data.SubwayScheduleClient
 import com.cobra.dev1new.domain.ArrivalFormatter
 import com.cobra.dev1new.domain.BoardingDiagnostic
@@ -109,9 +114,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import androidx.compose.ui.platform.LocalContext
+import java.time.LocalDate
 
 private val TransitCanvas = Color(0xFFF4F6FA)
 private val TransitIndigo = Color(0xFF3949AB)
+private val ImportedKtxGreen = Color(0xFF27823B)
 
 /**
  * UI-only interpretation of the progress written by the location service.
@@ -1001,19 +1008,85 @@ private fun ApiKeyNotice(onOpenSettings: () -> Unit) {
 
 private data class KtxForm(
     val departure: String = "", val arrival: String = "", val train: String = "",
-    val platform: String = "", val car: String = "", val seat: String = ""
+    val platform: String = "", val car: String = "", val seat: String = "",
+    val travelDate: String = ""
 ) {
     val hasAny: Boolean get() = listOf(departure, arrival, train, platform, car, seat).any(String::isNotBlank)
-    fun toSchedule() = KtxSchedule(departure, arrival, train, platform, car, seat)
-    companion object { fun from(value: KtxSchedule) = KtxForm(value.departureTime, value.arrivalTime, value.trainIdentifier, value.platform, value.car, value.seat) }
+    fun toSchedule() = KtxSchedule(departure, arrival, train, platform, car, seat, travelDate)
+    companion object { fun from(value: KtxSchedule) = KtxForm(value.departureTime, value.arrivalTime, value.trainIdentifier, value.platform, value.car, value.seat, value.travelDate) }
 }
 
-/** Keep only four clock digits; insert the separator after HH for typing and paste. */
+/** True only while the schedule exactly reflects the currently active dev-3 ticket. */
+private fun isActiveImportedKtxSchedule(
+    schedule: KtxSchedule,
+    journeyId: JourneyId,
+    context: android.content.Context,
+): Boolean {
+    val ticket = KtxTicketStore.activeTicketFor(KtxTicketStore.read(context), journeyId) ?: return false
+    return schedule.travelDate == ticket.travelDate.toString() &&
+        schedule.departureTime == ticket.departureTime &&
+        schedule.arrivalTime == ticket.arrivalTime &&
+        schedule.trainIdentifier == ticket.trainIdentifier &&
+        schedule.car == ticket.car &&
+        schedule.seat == ticket.seat &&
+        schedule.platform == ticket.platform
+}
+
+/** Same editing rule as 잡동사니's work-time card: keep at most four digits and one typed colon. */
+private fun cleanKtxTimeInput(value: String): String {
+    var colonSeen = false
+    var digitCount = 0
+    return buildString {
+        for (character in value) {
+            when {
+                character.isDigit() && digitCount < 4 -> {
+                    append(character)
+                    digitCount++
+                }
+                character == ':' && !colonSeen -> {
+                    append(character)
+                    colonSeen = true
+                }
+            }
+        }
+    }
+}
+
+/** Complete four digits as HH:mm only after focus leaves, so the caret never jumps while typing. */
 private fun formatKtxTimeInput(value: String): String {
     val digits = value.filter(Char::isDigit).take(4)
-    return when {
-        digits.length <= 2 -> digits
-        else -> "${digits.take(2)}:${digits.drop(2)}"
+    if (value.contains(':')) {
+        val beforeColon = value.substringBefore(':').filter(Char::isDigit).take(2)
+        val afterColon = value.substringAfter(':').filter(Char::isDigit).take(2)
+        return if (beforeColon.isNotEmpty()) "$beforeColon:$afterColon" else digits
+    }
+    return if (digits.length == 4) "${digits.take(2)}:${digits.drop(2)}" else digits
+}
+
+/** Convert Korean keyboard seat-letter keys as well as lowercase Latin input. */
+private fun normalizeKtxSeatInput(value: String): String = value
+    .replace("ㅁ", "A")
+    .replace("ㅠ", "B")
+    .replace("ㅊ", "C")
+    .replace("ㅇ", "D")
+    .uppercase()
+
+/**
+ * Same KTX boarding-date rule as dev-3 and 잡동사니's birth-date card.
+ * Keep digits while editing; after focus leaves, accept YYMMDD or YYYYMMDD
+ * and save the single canonical YYYY-MM-DD form.
+ */
+private fun ktxDateDigits(value: String): String = value.filter(Char::isDigit).take(8)
+
+private fun completeKtxDateInput(value: String): String {
+    val digits = ktxDateDigits(value)
+    return when (digits.length) {
+        8 -> "${digits.take(4)}-${digits.substring(4, 6)}-${digits.takeLast(2)}"
+        6 -> {
+            val prefix = if (digits.take(2).toInt() <= 50) "20" else "19"
+            "$prefix${digits.take(2)}-${digits.substring(2, 4)}-${digits.takeLast(2)}"
+        }
+        else -> digits
     }
 }
 
@@ -1032,6 +1105,7 @@ private fun KtxSettingsDialog(
     var apiKeyInput by remember { mutableStateOf("") }
     var clearApiKeyRequested by remember { mutableStateOf(false) }
     var isApiKeyConfigured by remember(initialApiKeyConfigured) { mutableStateOf(initialApiKeyConfigured) }
+    var apiKeySectionExpanded by rememberSaveable { mutableStateOf(false) }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxWidth(0.87f).heightIn(max = 740.dp), shape = MaterialTheme.shapes.large, tonalElevation = 6.dp) {
             // The dialog must shrink for the IME and retain enough bottom space
@@ -1044,31 +1118,66 @@ private fun KtxSettingsDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text("교통 정보 설정", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text("버스 실시간 도착정보", style = MaterialTheme.typography.titleSmall, color = TransitIndigo, fontWeight = FontWeight.Bold)
-                Text("API 키 · ${if (isApiKeyConfigured) "설정됨" else "미설정"}", fontWeight = FontWeight.SemiBold)
-                OutlinedTextField(
-                    value = apiKeyInput,
-                    onValueChange = { apiKeyInput = it; if (it.isNotBlank()) clearApiKeyRequested = false },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("공공데이터포털 서비스 키") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true
-                )
-                Text("키는 Android Keystore로 암호화해 기기 안에만 저장합니다. 입력하지 않으면 기존 키를 유지합니다.", style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { apiKeyInput = ""; clearApiKeyRequested = true }) {
-                    Text(if (clearApiKeyRequested) "키 삭제 예정" else "저장된 버스 API 키 삭제")
-                }
                 Text("KTX 수동 일정", style = MaterialTheme.typography.titleSmall, color = TransitIndigo, fontWeight = FontWeight.Bold)
-                KtxEditor("출근 KTX · 대전 → 동대구", commute) { commute = it }
-                KtxEditor("퇴근 KTX · 동대구 → 대전", returning) { returning = it }
-                Text("현재 KTX 일정은 수동 입력 방식입니다. 승차홈·호차·좌석은 자동 조회하지 않으니 직접 확인해 입력해 주세요. 출발·도착은 HH:mm로 입력하세요.", style = MaterialTheme.typography.bodySmall)
+                KtxEditor(
+                    "출근 KTX · 대전 → 동대구",
+                    commute,
+                    isActiveImportedKtxSchedule(initialCommute, JourneyId.COMMUTE, context),
+                ) { commute = it }
+                KtxEditor(
+                    "퇴근 KTX · 동대구 → 대전",
+                    returning,
+                    isActiveImportedKtxSchedule(initialReturn, JourneyId.RETURN, context),
+                ) { returning = it }
+                Text("승차홈은 이 앱에서 직접 관리", style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(
+                    onClick = { apiKeySectionExpanded = !apiKeySectionExpanded },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        if (apiKeySectionExpanded) "버스 API 키 관리 접기"
+                        else "버스 API 키 관리 · ${if (isApiKeyConfigured) "설정됨" else "미설정"}",
+                    )
+                }
+                if (apiKeySectionExpanded) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text("버스 실시간 도착정보", style = MaterialTheme.typography.titleSmall, color = TransitIndigo, fontWeight = FontWeight.Bold)
+                            Text("API 키 · ${if (isApiKeyConfigured) "설정됨" else "미설정"}", fontWeight = FontWeight.SemiBold)
+                            OutlinedTextField(
+                                value = apiKeyInput,
+                                onValueChange = { apiKeyInput = it; if (it.isNotBlank()) clearApiKeyRequested = false },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("공공데이터포털 서비스 키") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                            )
+                            Text("입력하지 않으면 기존 키를 유지합니다. 키는 기기 안에 암호화해 저장합니다.", style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = { apiKeyInput = ""; clearApiKeyRequested = true }) {
+                                Text(if (clearApiKeyRequested) "키 삭제 예정" else "저장된 버스 API 키 삭제")
+                            }
+                        }
+                    }
+                }
                 if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onDismiss) { Text("닫기") }
                     Button(onClick = {
                         val pattern = Regex("^(?:[01]\\d|2[0-3]):[0-5]\\d$")
-                        val invalid = listOf(commute, returning).any { it.hasAny && (!pattern.matches(it.departure) || !pattern.matches(it.arrival) || it.train.isBlank()) }
-                        if (invalid) error = "일정을 입력했다면 출발·도착 시각(HH:mm)과 열차번호를 모두 입력해 주세요."
+                        val invalid = listOf(commute, returning).any {
+                            it.hasAny && (
+                                !pattern.matches(it.departure) || !pattern.matches(it.arrival) || it.train.isBlank() ||
+                                    (it.travelDate.isNotBlank() && runCatching { LocalDate.parse(it.travelDate) }.isFailure)
+                            )
+                        }
+                        if (invalid) error = "탑승일·출발·도착(HH:mm)·열차번호를 확인하세요."
                         else {
                             val apiKeyChange = when {
                                 clearApiKeyRequested -> ""
@@ -1092,44 +1201,138 @@ private fun KtxSettingsDialog(
 }
 
 @Composable
-private fun KtxEditor(title: String, form: KtxForm, onChange: (KtxForm) -> Unit) {
+private fun KtxEditor(
+    title: String,
+    form: KtxForm,
+    initiallyImported: Boolean,
+    onChange: (KtxForm) -> Unit,
+) {
+    var travelDateInput by remember(form.travelDate) {
+        mutableStateOf(TextFieldValue(form.travelDate, selection = TextRange(form.travelDate.length)))
+    }
     var departureInput by remember(form.departure) {
         mutableStateOf(TextFieldValue(form.departure, selection = TextRange(form.departure.length)))
     }
     var arrivalInput by remember(form.arrival) {
         mutableStateOf(TextFieldValue(form.arrival, selection = TextRange(form.arrival.length)))
     }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(title, fontWeight = FontWeight.SemiBold)
-        OutlinedTextField(form.train, { onChange(form.copy(train = it)) }, Modifier.fillMaxWidth(), label = { Text("열차번호 (예: KTX-산천 054)") }, singleLine = true)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    var importedStyle by remember(initiallyImported) { mutableStateOf(initiallyImported) }
+    val contentColor = if (importedStyle) ImportedKtxGreen else Color.Black
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = contentColor,
+        unfocusedTextColor = contentColor,
+        focusedBorderColor = contentColor,
+        unfocusedBorderColor = contentColor,
+        focusedLabelColor = contentColor,
+        unfocusedLabelColor = contentColor,
+        cursorColor = contentColor,
+    )
+    fun updateForm(next: KtxForm) {
+        // The green state means the untouched values came from dev-3.  A direct
+        // edit is a manual value and must immediately return to black.
+        importedStyle = false
+        onChange(next)
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(title, fontWeight = FontWeight.SemiBold, color = contentColor)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    travelDateInput,
+                    { incoming ->
+                        val digits = ktxDateDigits(incoming.text)
+                        travelDateInput = TextFieldValue(digits, selection = TextRange(digits.length))
+                        updateForm(form.copy(travelDate = digits))
+                    },
+                    Modifier.weight(1f).onFocusChanged { focus ->
+                        if (!focus.isFocused) {
+                            val completed = completeKtxDateInput(form.travelDate)
+                            if (completed != form.travelDate) {
+                                travelDateInput = TextFieldValue(completed, selection = TextRange(completed.length))
+                                updateForm(form.copy(travelDate = completed))
+                            }
+                        }
+                    },
+                    label = { Text("탑승일") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    colors = fieldColors,
+                )
+                OutlinedTextField(
+                    form.train,
+                    { updateForm(form.copy(train = it)) },
+                    Modifier.weight(1f),
+                    label = { Text("열차번호") },
+                    singleLine = true,
+                    colors = fieldColors,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
                 departureInput,
                 { incoming ->
-                    val formatted = formatKtxTimeInput(incoming.text)
-                    departureInput = TextFieldValue(formatted, selection = TextRange(formatted.length))
-                    onChange(form.copy(departure = formatted))
+                    val cleaned = cleanKtxTimeInput(incoming.text)
+                    departureInput = TextFieldValue(cleaned, selection = TextRange(cleaned.length))
+                    updateForm(form.copy(departure = cleaned))
                 },
-                Modifier.weight(1f),
+                Modifier.weight(1f).onFocusChanged { focus ->
+                    if (!focus.isFocused) {
+                        val formatted = formatKtxTimeInput(form.departure)
+                        if (formatted != form.departure) {
+                            departureInput = TextFieldValue(formatted, selection = TextRange(formatted.length))
+                            updateForm(form.copy(departure = formatted))
+                        }
+                    }
+                },
                 label = { Text("출발 HH:mm") },
-                singleLine = true
+                singleLine = true,
+                colors = fieldColors,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             )
             OutlinedTextField(
                 arrivalInput,
                 { incoming ->
-                    val formatted = formatKtxTimeInput(incoming.text)
-                    arrivalInput = TextFieldValue(formatted, selection = TextRange(formatted.length))
-                    onChange(form.copy(arrival = formatted))
+                    val cleaned = cleanKtxTimeInput(incoming.text)
+                    arrivalInput = TextFieldValue(cleaned, selection = TextRange(cleaned.length))
+                    updateForm(form.copy(arrival = cleaned))
                 },
-                Modifier.weight(1f),
+                Modifier.weight(1f).onFocusChanged { focus ->
+                    if (!focus.isFocused) {
+                        val formatted = formatKtxTimeInput(form.arrival)
+                        if (formatted != form.arrival) {
+                            arrivalInput = TextFieldValue(formatted, selection = TextRange(formatted.length))
+                            updateForm(form.copy(arrival = formatted))
+                        }
+                    }
+                },
                 label = { Text("도착 HH:mm") },
-                singleLine = true
+                singleLine = true,
+                colors = fieldColors,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(form.platform, { onChange(form.copy(platform = it)) }, Modifier.weight(1f), label = { Text("승차홈") }, singleLine = true)
-            OutlinedTextField(form.car, { onChange(form.copy(car = it)) }, Modifier.weight(1f), label = { Text("호차") }, singleLine = true)
-            OutlinedTextField(form.seat, { onChange(form.copy(seat = it)) }, Modifier.weight(1f), label = { Text("좌석") }, singleLine = true)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(form.platform, { updateForm(form.copy(platform = it)) }, Modifier.weight(1f), label = { Text("승차홈") }, singleLine = true, colors = fieldColors)
+            OutlinedTextField(form.car, { updateForm(form.copy(car = it)) }, Modifier.weight(1f), label = { Text("호차") }, singleLine = true, colors = fieldColors)
+            OutlinedTextField(
+                form.seat,
+                { updateForm(form.copy(seat = normalizeKtxSeatInput(it))) },
+                Modifier.weight(1f),
+                label = { Text("좌석") },
+                singleLine = true,
+                colors = fieldColors,
+            )
+            }
         }
     }
 }

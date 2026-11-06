@@ -46,5 +46,12 @@
         <receiver
             android:name=".service.TransitActionReceiver"
             android:exported="false" />
+        <receiver
+            android:name=".service.KtxTicketReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.cobra.dev1new.action.SYNC_KTX_TICKETS" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
