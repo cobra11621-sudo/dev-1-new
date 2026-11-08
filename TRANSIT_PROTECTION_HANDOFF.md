@@ -7,7 +7,7 @@
 - JourneyReducer: 한 여정만 활성 상태를 소유한다. 버스·KTX 자동 탑승, 지하철 수동 탑승과 열차 고정, 다음 구간 전환·완료를 담당한다.
 - RouteCatalog·RouteGeometry·TransitGpsRules·TransitTrackingService: 경로 좌표·GPS 정확도·속도·회랑 등 판정만 담당한다. 화면과 알림 문구를 바꾸지 않는다.
 - MainActivity·TransitNotificationFactory: 탑승 예정/탑승 중의 화면·알림·Now Bar 의미를 담당한다.
-- 지하철 하차 문 방향: 목표역 두 정거장 전부터 표시한다.
+- 지하철 하차 문 방향: 목표역 바로 전 정거장과 목표역에서만 표시한다.
   - 출근: 2개/각산역/안심역/왼쪽
   - 퇴근: 2개/동구청역/동대구역/오른쪽
 

@@ -57,7 +57,7 @@ class TransitNotificationFactoryTest {
     }
 
     @Test
-    fun subway_target_door_side_appears_from_two_stations_before_without_counting_current_station() {
+    fun subway_target_door_side_appears_only_for_the_final_two_displays() {
         val commuteLeg = RouteCatalog.journey(JourneyId.COMMUTE).legs[2]
         val returningLeg = RouteCatalog.journey(JourneyId.RETURN).legs[1]
 
@@ -81,7 +81,7 @@ class TransitNotificationFactoryTest {
         )
 
         assertEquals("2개/각산역/안심역/왼쪽", commuteOneStopBefore.shortCriticalText)
-        assertEquals("3개/반야월역/각산역/왼쪽", commuteTwoStopsBefore.shortCriticalText)
+        assertEquals("3개/반야월역/각산역", commuteTwoStopsBefore.shortCriticalText)
         assertEquals("4개/신기역/반야월역", commuteThreeStopsBefore.shortCriticalText)
         assertEquals("1개/안심역/왼쪽", commuteAtTarget.shortCriticalText)
         assertEquals("1개/안심역", commuteAtTarget.body)
