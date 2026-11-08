@@ -178,12 +178,18 @@ object TransitGpsRules {
     }
 
     /**
-     * KTX auto boarding intentionally has only two conditions: the fix must be
-     * close to the configured Daejeon↔Dongdaegu KTX route and moving at least
-     * 20 km/h. Timetable and GPS-accuracy gates must not block boarding.
+     * KTX auto boarding requires the configured departure time to have arrived,
+     * a fix close to the configured Daejeon↔Dongdaegu KTX route, and a speed
+     * of at least 20 km/h. GPS accuracy must not block boarding.
      */
-    fun isKtxBoardingFix(fix: GeoFix, distanceFromKtxRouteMeters: Double?): Boolean =
-        distanceFromKtxRouteMeters != null &&
+    fun isKtxBoardingFix(
+        fix: GeoFix,
+        distanceFromKtxRouteMeters: Double?,
+        nowEpochMillis: Long,
+        departureEpochMillis: Long?
+    ): Boolean =
+        departureEpochMillis != null && nowEpochMillis >= departureEpochMillis &&
+            distanceFromKtxRouteMeters != null &&
             distanceFromKtxRouteMeters <= KTX_BOARDING_ROUTE_RADIUS_METERS &&
             fix.speedKmh >= 20.0f
 

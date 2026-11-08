@@ -102,12 +102,15 @@ class RouteGeometryTest {
     }
 
     @Test
-    fun ktxBoardingRequiresOnlyRouteDistanceAndSpeed() {
+    fun ktxBoardingRequiresDepartureTimeRouteDistanceAndSpeed() {
         val fix = GeoFix(36.0, 127.005, 999f, 20f, 1L)
+        val departure = 10_000L
 
-        assertTrue(TransitGpsRules.isKtxBoardingFix(fix, 2_000.0))
-        assertTrue(TransitGpsRules.isKtxBoardingFix(fix.copy(accuracyMeters = null), 1_999.0))
-        assertFalse(TransitGpsRules.isKtxBoardingFix(fix.copy(speedKmh = 19f), 100.0))
-        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 2_001.0))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 2_000.0, departure - 1, departure))
+        assertTrue(TransitGpsRules.isKtxBoardingFix(fix, 2_000.0, departure, departure))
+        assertTrue(TransitGpsRules.isKtxBoardingFix(fix.copy(accuracyMeters = null), 1_999.0, departure, departure))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 100.0, departure, null))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix.copy(speedKmh = 19f), 100.0, departure, departure))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 2_001.0, departure, departure))
     }
 }

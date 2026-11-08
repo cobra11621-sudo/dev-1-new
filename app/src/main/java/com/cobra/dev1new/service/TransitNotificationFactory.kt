@@ -162,12 +162,14 @@ internal object TransitNotificationFactory {
                 val lower = if (atDestination) "${subwayRemaining}개/$current" else "${subwayRemaining}개/$current/$next"
                 // DISPLAY CONTRACT — subway alighting direction is tied to the
                 // route's target station, never merely to a route terminal.
-                // It becomes useful one station before alighting: the inclusive
-                // count is 2 at that point and 1 at the target.  Keep the
-                // full, unambiguous label "왼쪽" or "오른쪽"; even a
+                // The displayed count intentionally includes the current
+                // station, but the "2정거장 전/1정거장 전" door cue must not:
+                // use only stations *after* the current one for its threshold.
+                // Keep the full, unambiguous label "왼쪽" or "오른쪽"; even a
                 // narrow Now Bar still conveys the direction when truncated.
                 // GPS/route-geometry changes must not alter this rule.
-                val shortCriticalText = if (subwayRemaining <= 2) "$lower/$direction" else lower
+                val stationsBeforeDestination = (stops.lastIndex - stopIndex).coerceAtLeast(0)
+                val shortCriticalText = if (stationsBeforeDestination in 1..2) "$lower/$direction" else lower
                 TransitNotificationText(title, shortCriticalText, lower, stopIndex, stops.size.coerceAtLeast(1), false)
             }
             TransportKind.KTX -> {

@@ -373,6 +373,7 @@ class TransitTrackingService : Service() {
     /** Use only the first fresh location received after the explicit button tap. */
     private fun handleRecoveryFix(journeyId: JourneyId, location: Location) {
         val now = System.currentTimeMillis()
+        val snapshot = repository.snapshot()
         val rawFix = GeoFix(
             latitude = location.latitude,
             longitude = location.longitude,
@@ -419,8 +420,14 @@ class TransitTrackingService : Service() {
         val ktxProjection = ktxIndex.takeIf { it >= 0 }?.let { index ->
             RouteGeometry.project(route.legs[index].routePoints, fix.latitude, fix.longitude)
         }
+        val ktxDeparture = snapshot.ktxSchedules[journeyId]?.let { schedule ->
+            KtxScheduleResolver.departureEpochMillis(
+                schedule,
+                snapshot.journeys[journeyId]?.plannedAtEpochMillis ?: now
+            )
+        }
         val ktxMatched = ktxIndex >= 0 && TransitGpsRules.isKtxBoardingFix(
-            fix, ktxProjection?.distanceMeters
+            fix, ktxProjection?.distanceMeters, now, ktxDeparture
         )
         // A derived KTX speed is valid only after enough time and distance have
         // accumulated.  Until then the one recovery attempt remains at step 2.
@@ -428,9 +435,9 @@ class TransitTrackingService : Service() {
             publishRecoveryProgress(2, "GPS 위치 수신", "속도 계산에 필요한 위치를 더 확인하고 있습니다.")
             return
         }
-        // KTX recovery deliberately uses exactly the same two conditions as
-        // automatic KTX boarding: route distance and speed.  GPS accuracy is
-        // still required for subway/bus recovery, but must not veto KTX.
+        // KTX recovery deliberately uses the same three conditions as automatic
+        // KTX boarding: departure time, route distance and speed. GPS accuracy
+        // is still required for subway/bus recovery, but must not veto KTX.
         if (!ktxMatched) {
             if (reportedAccuracy == null) {
                 recoveryLastFailureReason = "GPS 정확도를 확인하지 못했습니다."
@@ -507,11 +514,18 @@ class TransitTrackingService : Service() {
         val projection = RouteGeometry.project(leg.routePoints, fix.latitude, fix.longitude)
         when (leg.kind) {
             TransportKind.KTX -> {
+                val now = System.currentTimeMillis()
+                val departure = snapshot.ktxSchedules[journeyId]?.let { schedule ->
+                    KtxScheduleResolver.departureEpochMillis(schedule, progress.plannedAtEpochMillis ?: now)
+                }
+                val departureOk = departure != null && now >= departure
+                val departureText = departure?.let { KtxScheduleResolver.displayClock(it) } ?: "설정 필요"
                 if (!ktxSpeedMeasurementReady) {
                     repository.setBoardingDiagnostic(BoardingDiagnostic(
                         journeyId,
                         "KTX 탑승 조건 확인 중",
-                        "경로 거리: ${projection?.distanceMeters?.toInt() ?: "확인 불가"}m\n" +
+                        "출발 시각: $departureText 이후: ${if (departureOk) "충족" else "미충족"}\n" +
+                            "경로 거리: ${projection?.distanceMeters?.toInt() ?: "확인 불가"}m\n" +
                             "속도: 계산용 위치를 더 기다리는 중 (최소 5초·50m)"
                     ))
                     return
@@ -522,8 +536,9 @@ class TransitTrackingService : Service() {
                 val speedSource = if (rawFix.speedKmh > 0f) "GPS 제공" else "두 위치로 계산"
                 finishBoardingDiagnostic(
                     journeyId,
-                    if (routeOk && speedOk) "KTX 자동 탑승 조건 충족" else "KTX 자동 탑승 조건 미충족",
-                    "KTX 경로 거리: ${distance?.toInt() ?: "확인 불가"}m / 2,000m 이하: ${if (routeOk) "충족" else "미충족"}\n" +
+                    if (departureOk && routeOk && speedOk) "KTX 자동 탑승 조건 충족" else "KTX 자동 탑승 조건 미충족",
+                    "출발 시각: $departureText 이후: ${if (departureOk) "충족" else "미충족"}\n" +
+                        "KTX 경로 거리: ${distance?.toInt() ?: "확인 불가"}m / 2,000m 이하: ${if (routeOk) "충족" else "미충족"}\n" +
                         "현재 속도: ${"%.1f".format(fix.speedKmh)}km/h ($speedSource) / 20km/h 이상: ${if (speedOk) "충족" else "미충족"}"
                 )
             }
@@ -660,9 +675,12 @@ class TransitTrackingService : Service() {
         now: Long
     ) {
         if (progress.phase == LegPhase.PLANNED) {
-            if (TransitGpsRules.isKtxBoardingFix(fix, projection.distanceMeters)) {
+            val departure = snapshot.ktxSchedules[progress.journeyId]?.let { schedule ->
+                KtxScheduleResolver.departureEpochMillis(schedule, progress.plannedAtEpochMillis ?: now)
+            }
+            if (TransitGpsRules.isKtxBoardingFix(fix, projection.distanceMeters, now, departure)) {
                 if (repository.autoBoard(now) is com.cobra.dev1new.domain.TransitionResult.Applied) {
-                    postEvent("KTX 탑승 확인", "KTX 경로 2km 이내 · 시속 20km 이상 · 자동 탑승 처리")
+                    postEvent("KTX 탑승 확인", "출발 시각 경과 · KTX 경로 2km 이내 · 시속 20km 이상 · 자동 탑승 처리")
                 }
             }
             return
