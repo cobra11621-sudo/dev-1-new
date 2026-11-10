@@ -105,7 +105,7 @@ class TransitNotificationFactoryTest {
 
         val text = TransitNotificationFactory.text(snapshot, true, "18:07(0분)/18:18(11분)")
 
-        assertEquals("18:07(0분)/18:18(11분)/3-4", text.body)
+        assertEquals("18:07(0분)/18:18/3-4", text.body)
     }
 
     @Test
@@ -123,8 +123,24 @@ class TransitNotificationFactoryTest {
 
         val text = TransitNotificationFactory.text(snapshot, true, "18:07(0분)/18:18(11분)")
 
-        assertEquals("18:07(0분)/18:18(11분)/6-4", text.shortCriticalText)
+        assertEquals("18:07(0분)/18:18/6-4", text.shortCriticalText)
         assertEquals(text.shortCriticalText, text.body)
+    }
+
+    @Test
+    fun manual_board_action_is_offered_only_for_a_planned_manual_subway_leg() {
+        val plannedSubway = TravelSnapshot(
+            activeJourneyId = JourneyId.COMMUTE,
+            journeys = mapOf(JourneyId.COMMUTE to LegProgress(JourneyId.COMMUTE, 2, LegPhase.PLANNED))
+        )
+        val plannedKtx = TravelSnapshot(
+            activeJourneyId = JourneyId.COMMUTE,
+            journeys = mapOf(JourneyId.COMMUTE to LegProgress(JourneyId.COMMUTE, 1, LegPhase.PLANNED))
+        )
+
+        assertEquals(true, TransitNotificationFactory.canShowManualSubwayBoardAction(plannedSubway))
+        assertEquals(false, TransitNotificationFactory.canShowManualSubwayBoardAction(plannedKtx))
+        assertEquals(false, TransitNotificationFactory.canShowManualSubwayBoardAction(onboard(JourneyId.COMMUTE, 2, 0)))
     }
 
     @Test

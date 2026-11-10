@@ -195,6 +195,7 @@ class TransitTrackingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val snapshot = repository.snapshot()
+        val requestedManualSubwayBoarding = intent?.action == TransitNotificationFactory.ACTION_MANUAL_BOARD_SUBWAY
         val requestedRecovery = intent?.getStringExtra(EXTRA_RECOVERY_JOURNEY_ID)
             ?.let { runCatching { JourneyId.valueOf(it) }.getOrNull() }
         val requestedDiagnostic = intent?.getStringExtra(EXTRA_DIAGNOSTIC_JOURNEY_ID)
@@ -232,9 +233,29 @@ class TransitTrackingService : Service() {
         foregroundStarted = true
         acquireTrackingWakeLock()
         reconcileLocationSubscription(snapshot)
+        if (requestedManualSubwayBoarding) requestManualSubwayBoarding()
         mainHandler.removeCallbacks(tickRunnable)
         mainHandler.post(tickRunnable)
         return START_STICKY
+    }
+
+    private fun requestManualSubwayBoarding() {
+        val tappedAt = System.currentTimeMillis()
+        serviceScope.launch {
+            try {
+                ManualSubwayBoardingExecutor.execute(
+                    snapshot = repository.snapshot(),
+                    tappedAtEpochMillis = tappedAt,
+                    selectNearestTrip = subwayApi::selectNearestTrip,
+                    applyBoarding = repository::manualBoardSubway
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                // The existing planned notification stays visible so the user
+                // can retry if the bundled timetable cannot be read.
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -926,6 +947,12 @@ class TransitTrackingService : Service() {
 
         fun start(context: Context) {
             val intent = Intent(context, TransitTrackingService::class.java)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun requestManualSubwayBoarding(context: Context) {
+            val intent = Intent(context, TransitTrackingService::class.java)
+                .setAction(TransitNotificationFactory.ACTION_MANUAL_BOARD_SUBWAY)
             ContextCompat.startForegroundService(context, intent)
         }
 

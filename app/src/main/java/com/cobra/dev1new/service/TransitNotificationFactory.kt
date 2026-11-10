@@ -47,6 +47,7 @@ internal object TransitNotificationFactory {
     const val EVENT_NOTIFICATION_ID = 4201
     const val RECOVERY_STATUS_NOTIFICATION_ID = 4202
     const val ACTION_CANCEL_PLAN = "com.cobra.dev1new.action.CANCEL_PLAN"
+    const val ACTION_MANUAL_BOARD_SUBWAY = "com.cobra.dev1new.action.MANUAL_BOARD_SUBWAY"
 
     fun createChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -189,7 +190,26 @@ internal object TransitNotificationFactory {
 
     private fun withSubwayQuickTransfer(journeyId: JourneyId, text: String): String {
         val position = RouteCatalog.subwayQuickTransferPosition(journeyId) ?: return text
-        return if (text.endsWith("/$position")) text else "$text/$position"
+        if (text.endsWith("/$position")) return text
+        // The Now Bar truncates the transfer position when two full minute
+        // suffixes are present. Keep the first train's countdown, but shorten
+        // only the second upcoming train before appending the transfer cue.
+        val separator = text.lastIndexOf('/')
+        val compact = if (separator > 0) {
+            text.substring(0, separator + 1) + text.substring(separator + 1)
+                .replace(Regex("\\(\\d+분\\)$"), "")
+        } else text
+        return "$compact/$position"
+    }
+
+    /** The action is for the notification shade only; it never changes Now Bar text. */
+    internal fun canShowManualSubwayBoardAction(snapshot: TravelSnapshot): Boolean {
+        val progress = snapshot.activeProgress() ?: return false
+        val definition = RouteCatalog.journey(progress.journeyId)
+        val leg = definition.legs.getOrNull(progress.legIndex) ?: return false
+        return progress.phase == LegPhase.PLANNED &&
+            definition.subwayManualBoarding &&
+            leg.kind == TransportKind.SUBWAY
     }
 
     fun build(
@@ -235,6 +255,15 @@ internal object TransitNotificationFactory {
             builder.setSubText(model.shortCriticalText)
         }
         if (snapshot.activeProgress()?.phase == LegPhase.PLANNED) {
+            if (canShowManualSubwayBoardAction(snapshot)) {
+                val boardIntent = PendingIntent.getBroadcast(
+                    context,
+                    4203,
+                    Intent(context, TransitActionReceiver::class.java).setAction(ACTION_MANUAL_BOARD_SUBWAY),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                builder.addAction(android.R.drawable.ic_media_play, "탑승 처리", boardIntent)
+            }
             val cancelIntent = PendingIntent.getBroadcast(
                 context,
                 4201,
