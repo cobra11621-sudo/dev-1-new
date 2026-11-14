@@ -13,8 +13,26 @@ object KtxScheduleResolver {
     private val timePattern = Regex("^(?:[01]\\d|2[0-3]):[0-5]\\d$")
     private val clockFormat = DateTimeFormatter.ofPattern("HH:mm", Locale.KOREA)
 
-    fun departureEpochMillis(schedule: KtxSchedule, referenceEpochMillis: Long): Long? =
-        resolveNearest(schedule.departureTime, referenceEpochMillis)
+    /**
+     * Imported dev-3 tickets carry their actual travel date. That date is
+     * authoritative for KTX tracking and recovery; a blank date preserves the
+     * existing nearest-clock behavior for manually entered legacy settings.
+     */
+    fun departureEpochMillis(schedule: KtxSchedule, referenceEpochMillis: Long): Long? {
+        if (schedule.travelDate.isNotBlank()) {
+            return resolveOnDate(schedule.travelDate, schedule.departureTime)
+        }
+        return resolveNearest(schedule.departureTime, referenceEpochMillis)
+    }
+
+    fun resolveOnDate(dateText: String, clockText: String): Long? {
+        if (!timePattern.matches(clockText)) return null
+        val date = runCatching { LocalDate.parse(dateText) }.getOrNull() ?: return null
+        return LocalDateTime.of(date, LocalTime.parse(clockText))
+            .atZone(ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
+    }
 
     fun arrivalEpochMillis(schedule: KtxSchedule, departureEpochMillis: Long): Long? {
         if (!timePattern.matches(schedule.arrivalTime)) return null

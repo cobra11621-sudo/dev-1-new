@@ -407,17 +407,85 @@ class TransitTrackingService : Service() {
         val fix = if (hasKtx) ktxFixWithDerivedSpeed(rawFix) else rawFix
         val reportedAccuracy = fix.accuracyMeters
         val accuracy = reportedAccuracy ?: Float.MAX_VALUE
+        val ktxIndex = route.legs.indexOfFirst { it.kind == TransportKind.KTX }
+        val ktxProjection = ktxIndex.takeIf { it >= 0 }?.let { index ->
+            RouteGeometry.project(route.legs[index].routePoints, fix.latitude, fix.longitude)
+        }
+        val ktxSchedule = snapshot.ktxSchedules[journeyId]
+        val ktxDeparture = ktxSchedule?.let { schedule ->
+            KtxScheduleResolver.departureEpochMillis(
+                schedule,
+                snapshot.journeys[journeyId]?.plannedAtEpochMillis ?: now
+            )
+        }
+        val ktxArrival = ktxSchedule?.let { schedule ->
+            ktxDeparture?.let { departure ->
+                KtxScheduleResolver.arrivalEpochMillis(schedule, departure)
+            }
+        }
+        val withinKtxTravelTime = ktxDeparture != null && ktxArrival != null &&
+            now >= ktxDeparture && now < ktxArrival
+        val ktxMatched = ktxIndex >= 0 && TransitGpsRules.isKtxBoardingFix(
+            fix, ktxProjection?.distanceMeters, now, ktxDeparture, ktxArrival
+        )
 
-        val subwayIndex = route.legs.indexOfFirst { it.kind == TransportKind.SUBWAY }
-        val subwayPoint = RouteCatalog.subwayBoardingPoint(journeyId)
-        // A 100m-accurate fix cannot truthfully establish a 50m station-exit
-        // boundary, so subway recovery needs both a 50m coordinate distance
-        // and 50m-or-better reported accuracy.
-        val subwayNearby = subwayIndex >= 0 && subwayPoint != null &&
-            accuracy <= SUBWAY_RECOVERY_RADIUS_METERS &&
-            RouteGeometry.distance(fix.latitude, fix.longitude, subwayPoint.latitude, subwayPoint.longitude) <= SUBWAY_RECOVERY_RADIUS_METERS
+        // This is an explicit recovery only, not an automatic boarding rule.
+        // The same physical Dongdaegu transfer area resumes different planned
+        // legs according to the journey the user selected: commute resumes the
+        // subway after its scheduled KTX arrival, while return resumes KTX
+        // before its scheduled departure.
+        val dongdaeguTransferArea = journeyId in setOf(JourneyId.COMMUTE, JourneyId.RETURN) &&
+            TransitGpsRules.isDongdaeguTransferArea(fix, RouteCatalog.dongdaeguTransferPoint())
+        val dongdaeguTransferLegIndex = RouteCatalog.dongdaeguTransferPlannedLegIndex(journeyId)
+            ?.takeIf {
+                TransitGpsRules.isDongdaeguTransferRecoveryAllowed(
+                    journeyId, dongdaeguTransferArea, now, ktxDeparture, ktxArrival
+                )
+            }
+        val commuteDaejeonKtxBoardingRecovery = journeyId == JourneyId.COMMUTE &&
+            accuracy <= RECOVERY_MAX_ACCURACY_METERS &&
+            RouteGeometry.distance(
+                fix.latitude, fix.longitude,
+                RouteCatalog.daejeonKtxBoardingPoint().latitude,
+                RouteCatalog.daejeonKtxBoardingPoint().longitude
+            ) <= DAEJEON_KTX_BOARDING_ZONE_METERS &&
+            TransitGpsRules.isKtxPreDepartureRecovery(now, ktxDeparture)
+
+        // Manual recovery chooses the next waiting leg from the current area.
+        // Speed is reserved for the distinct KTX ONBOARD decision below.
+        val commuteBusIndex = route.legs.indexOfFirst { it.id == "commute_514" }
+        val commuteBusBoardingPoint = route.legs.getOrNull(commuteBusIndex)?.routePoints?.firstOrNull()
+        val commuteBusBoardingRecovery = journeyId == JourneyId.COMMUTE && commuteBusBoardingPoint != null &&
+            !withinKtxTravelTime &&
+            accuracy <= RECOVERY_MAX_ACCURACY_METERS &&
+            RouteGeometry.distance(fix.latitude, fix.longitude, commuteBusBoardingPoint.latitude, commuteBusBoardingPoint.longitude) <=
+            BUS_BOARDING_RECOVERY_RADIUS_METERS
+        val commuteFinalBusIndex = route.legs.indexOfFirst { it.id == "commute_donggu4_1" }
+        val commuteFinalBusBoardingPoint = route.legs.getOrNull(commuteFinalBusIndex)?.routePoints?.firstOrNull()
+        val commuteFinalBusRecovery = journeyId == JourneyId.COMMUTE && commuteFinalBusBoardingPoint != null &&
+            !withinKtxTravelTime &&
+            accuracy <= RECOVERY_MAX_ACCURACY_METERS &&
+            RouteGeometry.distance(fix.latitude, fix.longitude, commuteFinalBusBoardingPoint.latitude, commuteFinalBusBoardingPoint.longitude) <=
+            BUS_BOARDING_RECOVERY_RADIUS_METERS
+
+        // Before the return KTX leaves, both the workplace bus stop and 안심역
+        // mean the next waiting leg is the subway. The user can explicitly
+        // restore the first bus plan with the separate bus-start button.
+        val returnSubwayIndex = route.legs.indexOfFirst { it.id == "return_subway" }
+        val returnFirstBusPoint = route.legs.firstOrNull { it.id == "return_donggu4" }?.routePoints?.firstOrNull()
+        val returnSubwayPoint = RouteCatalog.subwayBoardingPoint(JourneyId.RETURN)
+        val returnSubwayRecovery = journeyId == JourneyId.RETURN &&
+            accuracy <= RECOVERY_MAX_ACCURACY_METERS &&
+            TransitGpsRules.isKtxPreDepartureRecovery(now, ktxDeparture) &&
+            ((returnFirstBusPoint != null && RouteGeometry.distance(
+                fix.latitude, fix.longitude, returnFirstBusPoint.latitude, returnFirstBusPoint.longitude
+            ) <= BUS_BOARDING_RECOVERY_RADIUS_METERS) ||
+                (returnSubwayPoint != null && RouteGeometry.distance(
+                    fix.latitude, fix.longitude, returnSubwayPoint.latitude, returnSubwayPoint.longitude
+                ) <= SUBWAY_RECOVERY_RADIUS_METERS))
+
         // A return-direction recovery requested by the user at Daejeon Station
-        // means the next leg is the 514 boarding plan.  It is not evidence that
+        // means the next leg is the 514 boarding plan. It is not evidence that
         // the user has already boarded a bus, even when the GPS point happens
         // to project near 목척교, the second route point.
         val returnBusIndex = route.legs.indexOfFirst { it.id == "return_514" }
@@ -437,28 +505,15 @@ class TransitTrackingService : Service() {
                 DAEJEON_SUBWAY_EXIT_4_LONGITUDE
             ) <= DAEJEON_SUBWAY_EXIT_4_BOARDING_ZONE_METERS
         val returnBusBoardingNearby = returnBusStopNearby || returnSubwayExit4Nearby
-        val ktxIndex = route.legs.indexOfFirst { it.kind == TransportKind.KTX }
-        val ktxProjection = ktxIndex.takeIf { it >= 0 }?.let { index ->
-            RouteGeometry.project(route.legs[index].routePoints, fix.latitude, fix.longitude)
-        }
-        val ktxDeparture = snapshot.ktxSchedules[journeyId]?.let { schedule ->
-            KtxScheduleResolver.departureEpochMillis(
-                schedule,
-                snapshot.journeys[journeyId]?.plannedAtEpochMillis ?: now
-            )
-        }
-        val ktxMatched = ktxIndex >= 0 && TransitGpsRules.isKtxBoardingFix(
-            fix, ktxProjection?.distanceMeters, now, ktxDeparture
-        )
-        // A derived KTX speed is valid only after enough time and distance have
-        // accumulated.  Until then the one recovery attempt remains at step 2.
-        if (ktxIndex >= 0 && !ktxMatched && !ktxSpeedMeasurementReady) {
-            publishRecoveryProgress(2, "GPS 위치 수신", "속도 계산에 필요한 위치를 더 확인하고 있습니다.")
-            return
-        }
+        // At Daejeon after the return KTX's planned arrival, the next leg is
+        // the 514 waiting plan. This is a station recovery, so it must not
+        // wait for a KTX-speed measurement intended only for ONBOARD status.
+        val returnDaejeonPostArrivalRecovery = journeyId == JourneyId.RETURN &&
+            returnBusBoardingNearby &&
+            TransitGpsRules.isKtxPostArrivalTransferRecovery(now, ktxArrival)
         // KTX recovery deliberately uses the same three conditions as automatic
-        // KTX boarding: departure time, route distance and speed. GPS accuracy
-        // is still required for subway/bus recovery, but must not veto KTX.
+        // KTX boarding: travel-time window, route distance and speed. GPS
+        // accuracy is still required for planned/bus recovery, but not KTX.
         if (!ktxMatched) {
             if (reportedAccuracy == null) {
                 recoveryLastFailureReason = "GPS 정확도를 확인하지 못했습니다."
@@ -478,11 +533,27 @@ class TransitTrackingService : Service() {
         }.minByOrNull { it.second.distanceMeters }
 
         val applied = when {
-            subwayNearby -> repository.recoverAt(journeyId, subwayIndex, LegPhase.PLANNED, 0, now)
-            returnBusBoardingNearby -> repository.recoverAt(journeyId, returnBusIndex, LegPhase.PLANNED, 0, now)
             ktxMatched -> repository.recoverAt(
                 journeyId, ktxIndex, LegPhase.ONBOARD,
                 ktxProjection?.stopIndex(route.legs[ktxIndex].stops.size) ?: 0, now
+            )
+            commuteBusBoardingRecovery -> repository.recoverAt(
+                journeyId, commuteBusIndex, LegPhase.PLANNED, 0, now
+            )
+            commuteDaejeonKtxBoardingRecovery -> repository.recoverAt(
+                journeyId, ktxIndex, LegPhase.PLANNED, 0, now
+            )
+            dongdaeguTransferLegIndex != null -> repository.recoverAt(
+                journeyId, dongdaeguTransferLegIndex, LegPhase.PLANNED, 0, now
+            )
+            commuteFinalBusRecovery -> repository.recoverAt(
+                journeyId, commuteFinalBusIndex, LegPhase.PLANNED, 0, now
+            )
+            returnSubwayRecovery -> repository.recoverAt(
+                journeyId, returnSubwayIndex, LegPhase.PLANNED, 0, now
+            )
+            returnDaejeonPostArrivalRecovery -> repository.recoverAt(
+                journeyId, returnBusIndex, LegPhase.PLANNED, 0, now
             )
             busMatch != null -> {
                 val (index, projection) = busMatch
@@ -536,16 +607,23 @@ class TransitTrackingService : Service() {
         when (leg.kind) {
             TransportKind.KTX -> {
                 val now = System.currentTimeMillis()
-                val departure = snapshot.ktxSchedules[journeyId]?.let { schedule ->
-                    KtxScheduleResolver.departureEpochMillis(schedule, progress.plannedAtEpochMillis ?: now)
+                val schedule = snapshot.ktxSchedules[journeyId]
+                val departure = schedule?.let { configuredSchedule ->
+                    KtxScheduleResolver.departureEpochMillis(configuredSchedule, progress.plannedAtEpochMillis ?: now)
+                }
+                val arrival = schedule?.let { configuredSchedule ->
+                    departure?.let { KtxScheduleResolver.arrivalEpochMillis(configuredSchedule, it) }
                 }
                 val departureOk = departure != null && now >= departure
+                val arrivalOk = arrival != null && now < arrival
                 val departureText = departure?.let { KtxScheduleResolver.displayClock(it) } ?: "설정 필요"
+                val arrivalText = arrival?.let { KtxScheduleResolver.displayClock(it) } ?: "설정 필요"
                 if (!ktxSpeedMeasurementReady) {
                     repository.setBoardingDiagnostic(BoardingDiagnostic(
                         journeyId,
                         "KTX 탑승 조건 확인 중",
                         "출발 시각: $departureText 이후: ${if (departureOk) "충족" else "미충족"}\n" +
+                            "도착 시각: $arrivalText 이전: ${if (arrivalOk) "충족" else "미충족"}\n" +
                             "경로 거리: ${projection?.distanceMeters?.toInt() ?: "확인 불가"}m\n" +
                             "속도: 계산용 위치를 더 기다리는 중 (최소 5초·50m)"
                     ))
@@ -557,8 +635,9 @@ class TransitTrackingService : Service() {
                 val speedSource = if (rawFix.speedKmh > 0f) "GPS 제공" else "두 위치로 계산"
                 finishBoardingDiagnostic(
                     journeyId,
-                    if (departureOk && routeOk && speedOk) "KTX 자동 탑승 조건 충족" else "KTX 자동 탑승 조건 미충족",
+                    if (departureOk && arrivalOk && routeOk && speedOk) "KTX 자동 탑승 조건 충족" else "KTX 자동 탑승 조건 미충족",
                     "출발 시각: $departureText 이후: ${if (departureOk) "충족" else "미충족"}\n" +
+                        "도착 시각: $arrivalText 이전: ${if (arrivalOk) "충족" else "미충족"}\n" +
                         "KTX 경로 거리: ${distance?.toInt() ?: "확인 불가"}m / 2,000m 이하: ${if (routeOk) "충족" else "미충족"}\n" +
                         "현재 속도: ${"%.1f".format(fix.speedKmh)}km/h ($speedSource) / 20km/h 이상: ${if (speedOk) "충족" else "미충족"}"
                 )
@@ -696,12 +775,16 @@ class TransitTrackingService : Service() {
         now: Long
     ) {
         if (progress.phase == LegPhase.PLANNED) {
-            val departure = snapshot.ktxSchedules[progress.journeyId]?.let { schedule ->
-                KtxScheduleResolver.departureEpochMillis(schedule, progress.plannedAtEpochMillis ?: now)
+            val schedule = snapshot.ktxSchedules[progress.journeyId]
+            val departure = schedule?.let { configuredSchedule ->
+                KtxScheduleResolver.departureEpochMillis(configuredSchedule, progress.plannedAtEpochMillis ?: now)
             }
-            if (TransitGpsRules.isKtxBoardingFix(fix, projection.distanceMeters, now, departure)) {
+            val arrival = schedule?.let { configuredSchedule ->
+                departure?.let { KtxScheduleResolver.arrivalEpochMillis(configuredSchedule, it) }
+            }
+            if (TransitGpsRules.isKtxBoardingFix(fix, projection.distanceMeters, now, departure, arrival)) {
                 if (repository.autoBoard(now) is com.cobra.dev1new.domain.TransitionResult.Applied) {
-                    postEvent("KTX 탑승 확인", "출발 시각 경과 · KTX 경로 2km 이내 · 시속 20km 이상 · 자동 탑승 처리")
+                    postEvent("KTX 탑승 확인", "출발~도착 예정 시각 사이 · KTX 경로 2km 이내 · 시속 20km 이상 · 자동 탑승 처리")
                 }
             }
             return
@@ -933,7 +1016,9 @@ class TransitTrackingService : Service() {
         private const val KTX_DERIVED_SPEED_MIN_DISTANCE_METERS = 50.0
         private const val RECOVERY_MAX_ACCURACY_METERS = 100.0f
         private const val SUBWAY_RECOVERY_RADIUS_METERS = 50.0
+        private const val BUS_BOARDING_RECOVERY_RADIUS_METERS = 500.0
         private const val RETURN_BUS_STOP_BOARDING_ZONE_METERS = 500.0
+        private const val DAEJEON_KTX_BOARDING_ZONE_METERS = 500.0
         private const val DAEJEON_SUBWAY_EXIT_4_LATITUDE = 36.3320032
         private const val DAEJEON_SUBWAY_EXIT_4_LONGITUDE = 127.4334484
         private const val DAEJEON_SUBWAY_EXIT_4_BOARDING_ZONE_METERS = 300.0

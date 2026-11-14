@@ -97,6 +97,8 @@ data class BusBoardingProbe(val firstFix: GeoFix, val firstProjection: RouteProj
 object TransitGpsRules {
     private const val BUS_MAX_ACCURACY_METERS = 80.0f
     private const val BUS_ROUTE_CORRIDOR_METERS = 250.0
+    private const val DONGDAEGU_TRANSFER_RADIUS_METERS = 500.0
+    private const val DONGDAEGU_TRANSFER_MAX_ACCURACY_METERS = 100.0f
     private const val BUS_MIN_OBSERVATION_MILLIS = 7_000L
     private const val BUS_MIN_FORWARD_METERS = 30.0
     private const val BUS_MIN_PHYSICAL_METERS = 30.0
@@ -178,17 +180,19 @@ object TransitGpsRules {
     }
 
     /**
-     * KTX auto boarding requires the configured departure time to have arrived,
-     * a fix close to the configured Daejeon↔Dongdaegu KTX route, and a speed
-     * of at least 20 km/h. GPS accuracy must not block boarding.
+     * KTX auto boarding requires the configured travel-time window, a fix close
+     * to the configured Daejeon↔Dongdaegu KTX route, and a speed of at least
+     * 20 km/h. GPS accuracy must not block boarding.
      */
     fun isKtxBoardingFix(
         fix: GeoFix,
         distanceFromKtxRouteMeters: Double?,
         nowEpochMillis: Long,
-        departureEpochMillis: Long?
+        departureEpochMillis: Long?,
+        arrivalEpochMillis: Long?
     ): Boolean =
-        departureEpochMillis != null && nowEpochMillis >= departureEpochMillis &&
+        departureEpochMillis != null && arrivalEpochMillis != null &&
+            nowEpochMillis >= departureEpochMillis && nowEpochMillis < arrivalEpochMillis &&
             distanceFromKtxRouteMeters != null &&
             distanceFromKtxRouteMeters <= KTX_BOARDING_ROUTE_RADIUS_METERS &&
             fix.speedKmh >= 20.0f
@@ -200,6 +204,44 @@ object TransitGpsRules {
         val accuracy = fix.accuracyMeters ?: return false
         return accuracy <= 250.0f && fix.speedKmh < 5.0f &&
             RouteGeometry.distance(fix.latitude, fix.longitude, destination.latitude, destination.longitude) <= 2_000.0
+    }
+
+    /** A manual recovery must be close enough to the Dongdaegu transfer hub. */
+    fun isDongdaeguTransferArea(fix: GeoFix, transferPoint: GeoPoint): Boolean {
+        val accuracy = fix.accuracyMeters ?: return false
+        return accuracy <= DONGDAEGU_TRANSFER_MAX_ACCURACY_METERS &&
+            RouteGeometry.distance(fix.latitude, fix.longitude, transferPoint.latitude, transferPoint.longitude) <=
+            DONGDAEGU_TRANSFER_RADIUS_METERS
+    }
+
+    /** A planned KTX recovery is never allowed at or after KTX departure. */
+    fun isKtxPreDepartureRecovery(
+        nowEpochMillis: Long,
+        departureEpochMillis: Long?
+    ): Boolean = departureEpochMillis != null && nowEpochMillis < departureEpochMillis
+
+    /** A return-side bus recovery begins only after the scheduled KTX arrival. */
+    fun isKtxPostArrivalTransferRecovery(
+        nowEpochMillis: Long,
+        arrivalEpochMillis: Long?
+    ): Boolean = arrivalEpochMillis != null && nowEpochMillis >= arrivalEpochMillis
+
+    /**
+     * Direction is part of manual-transfer recovery: commute starts the
+     * subway only after its KTX's scheduled arrival, while return starts KTX
+     * only before its scheduled departure.
+     */
+    fun isDongdaeguTransferRecoveryAllowed(
+        journeyId: JourneyId,
+        inTransferArea: Boolean,
+        nowEpochMillis: Long,
+        departureEpochMillis: Long?,
+        arrivalEpochMillis: Long?
+    ): Boolean = when (journeyId) {
+        JourneyId.COMMUTE -> inTransferArea && arrivalEpochMillis != null && nowEpochMillis >= arrivalEpochMillis
+        JourneyId.RETURN -> inTransferArea &&
+            isKtxPreDepartureRecovery(nowEpochMillis, departureEpochMillis)
+        else -> false
     }
 
     private const val KTX_BOARDING_ROUTE_RADIUS_METERS = 2_000.0

@@ -93,6 +93,7 @@ import com.cobra.dev1new.domain.ArrivalFormatter
 import com.cobra.dev1new.domain.BoardingDiagnostic
 import com.cobra.dev1new.domain.JourneyDefinition
 import com.cobra.dev1new.domain.JourneyId
+import com.cobra.dev1new.domain.JourneyTabResolver
 import com.cobra.dev1new.domain.KtxSchedule
 import com.cobra.dev1new.domain.KtxScheduleResolver
 import com.cobra.dev1new.domain.LegPhase
@@ -258,6 +259,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onPostResume() {
         super.onPostResume()
+        // dev-3 hands over complete, date-bound KTX tickets.  The receiver
+        // normally applies them immediately, but Android can keep this
+        // Activity alive across a handoff or a date change.  Reapply the
+        // already-persisted list whenever the user returns to this screen so
+        // the shared snapshot, cards and settings dialog cannot remain stale.
+        // This changes KTX schedules only; it never changes journey progress.
+        repository.syncExternalKtxTickets(KtxTicketStore.read(this), System.currentTimeMillis())
         if (repository.snapshot().activeProgress() == null) {
             restorePermissionWarningShown = false
             return
@@ -411,7 +419,6 @@ class MainActivity : ComponentActivity() {
             .show()
     }
 }
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun NativeCommuteApp(
@@ -431,7 +438,9 @@ private fun NativeCommuteApp(
     onExportKtxRecording: () -> Unit,
     onSaveSettings: (KtxSchedule?, KtxSchedule?, String?) -> Boolean
 ) {
-    var tab by rememberSaveable { mutableIntStateOf(0) }
+    // Initial choice only. Manual tab taps and horizontal swipes remain the
+    // user's choice for the rest of this screen session.
+    var tab by rememberSaveable { mutableIntStateOf(JourneyTabResolver.initialTab(snapshot)) }
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
     var boardingJourney by remember { mutableStateOf<JourneyId?>(null) }
     var boardingMessageJourney by remember { mutableStateOf<JourneyId?>(null) }
@@ -1099,8 +1108,20 @@ private fun KtxSettingsDialog(
     onSave: (KtxSchedule?, KtxSchedule?, String?) -> Boolean
 ) {
     val context = LocalContext.current
-    var commute by remember { mutableStateOf(KtxForm.from(initialCommute)) }
-    var returning by remember { mutableStateOf(KtxForm.from(initialReturn)) }
+    // The canonical snapshot is normally refreshed by KtxTicketReceiver.  Keep
+    // this fallback at the dialog boundary as well: when a restored Activity
+    // still holds an older snapshot, the user must never see empty KTX fields
+    // while the received dev-3 ticket is safely stored on this device.
+    val ticketSchedules = remember(context) {
+        KtxTicketStore.mergeActiveSchedules(
+            current = emptyMap(),
+            tickets = KtxTicketStore.read(context),
+        )
+    }
+    val displayCommute = ticketSchedules[JourneyId.COMMUTE] ?: initialCommute
+    val displayReturn = ticketSchedules[JourneyId.RETURN] ?: initialReturn
+    var commute by remember(displayCommute) { mutableStateOf(KtxForm.from(displayCommute)) }
+    var returning by remember(displayReturn) { mutableStateOf(KtxForm.from(displayReturn)) }
     var error by remember { mutableStateOf("") }
     var apiKeyInput by remember { mutableStateOf("") }
     var clearApiKeyRequested by remember { mutableStateOf(false) }
@@ -1114,20 +1135,20 @@ private fun KtxSettingsDialog(
                 Modifier
                     .verticalScroll(rememberScrollState())
                     .imePadding()
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text("교통 정보 설정", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("KTX 수동 일정", style = MaterialTheme.typography.titleSmall, color = TransitIndigo, fontWeight = FontWeight.Bold)
                 KtxEditor(
                     "출근 KTX · 대전 → 동대구",
                     commute,
-                    isActiveImportedKtxSchedule(initialCommute, JourneyId.COMMUTE, context),
+                    isActiveImportedKtxSchedule(displayCommute, JourneyId.COMMUTE, context),
                 ) { commute = it }
                 KtxEditor(
                     "퇴근 KTX · 동대구 → 대전",
                     returning,
-                    isActiveImportedKtxSchedule(initialReturn, JourneyId.RETURN, context),
+                    isActiveImportedKtxSchedule(displayReturn, JourneyId.RETURN, context),
                 ) { returning = it }
                 Text("승차홈은 이 앱에서 직접 관리", style = MaterialTheme.typography.bodySmall)
                 OutlinedButton(
@@ -1239,8 +1260,8 @@ private fun KtxEditor(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(title, fontWeight = FontWeight.SemiBold, color = contentColor)
             Row(

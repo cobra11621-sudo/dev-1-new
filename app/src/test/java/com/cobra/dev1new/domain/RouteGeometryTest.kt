@@ -102,15 +102,63 @@ class RouteGeometryTest {
     }
 
     @Test
-    fun ktxBoardingRequiresDepartureTimeRouteDistanceAndSpeed() {
+    fun ktxBoardingRequires_travel_time_window_route_distance_and_speed() {
         val fix = GeoFix(36.0, 127.005, 999f, 20f, 1L)
         val departure = 10_000L
+        val arrival = 20_000L
 
-        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 2_000.0, departure - 1, departure))
-        assertTrue(TransitGpsRules.isKtxBoardingFix(fix, 2_000.0, departure, departure))
-        assertTrue(TransitGpsRules.isKtxBoardingFix(fix.copy(accuracyMeters = null), 1_999.0, departure, departure))
-        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 100.0, departure, null))
-        assertFalse(TransitGpsRules.isKtxBoardingFix(fix.copy(speedKmh = 19f), 100.0, departure, departure))
-        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 2_001.0, departure, departure))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 2_000.0, departure - 1, departure, arrival))
+        assertTrue(TransitGpsRules.isKtxBoardingFix(fix, 2_000.0, departure, departure, arrival))
+        assertTrue(TransitGpsRules.isKtxBoardingFix(fix.copy(accuracyMeters = null), 1_999.0, departure, departure, arrival))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 100.0, departure, null, arrival))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 100.0, departure, departure, null))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 100.0, arrival, departure, arrival))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix.copy(speedKmh = 19f), 100.0, departure, departure, arrival))
+        assertFalse(TransitGpsRules.isKtxBoardingFix(fix, 2_001.0, departure, departure, arrival))
+    }
+
+    @Test
+    fun dongdaegu_transfer_recovery_requires_an_accurate_area_and_directional_ktx_time() {
+        val transfer = RouteCatalog.dongdaeguTransferPoint()
+        val fix = GeoFix(transfer.latitude, transfer.longitude, 80f, 25f, 1L)
+
+        assertTrue(TransitGpsRules.isDongdaeguTransferArea(fix, transfer))
+        assertFalse(TransitGpsRules.isDongdaeguTransferArea(fix.copy(accuracyMeters = 101f), transfer))
+        // About 0.003° latitude is roughly 330m, which is inside the agreed
+        // 500m transfer area.  Keep the rejection probe clearly outside it.
+        assertFalse(TransitGpsRules.isDongdaeguTransferArea(fix.copy(latitude = transfer.latitude + 0.005), transfer))
+        assertTrue(TransitGpsRules.isKtxPreDepartureRecovery(9_999L, 10_000L))
+        assertFalse(TransitGpsRules.isKtxPreDepartureRecovery(10_000L, 10_000L))
+        assertFalse(TransitGpsRules.isKtxPreDepartureRecovery(9_999L, null))
+        assertTrue(TransitGpsRules.isKtxPostArrivalTransferRecovery(10_000L, 10_000L))
+        assertFalse(TransitGpsRules.isKtxPostArrivalTransferRecovery(9_999L, 10_000L))
+        assertFalse(TransitGpsRules.isKtxPostArrivalTransferRecovery(10_000L, null))
+        assertTrue(TransitGpsRules.isDongdaeguTransferRecoveryAllowed(
+            JourneyId.COMMUTE, true, 10_000L, 9_000L, 10_000L
+        ))
+        assertFalse(TransitGpsRules.isDongdaeguTransferRecoveryAllowed(
+            JourneyId.COMMUTE, true, 9_999L, 9_000L, 10_000L
+        ))
+        assertFalse(TransitGpsRules.isDongdaeguTransferRecoveryAllowed(
+            JourneyId.COMMUTE, true, 10_000L, 9_000L, null
+        ))
+        assertTrue(TransitGpsRules.isDongdaeguTransferRecoveryAllowed(
+            JourneyId.RETURN, true, 9_999L, 10_000L, 9_000L
+        ))
+        assertFalse(TransitGpsRules.isDongdaeguTransferRecoveryAllowed(
+            JourneyId.RETURN, true, 10_000L, 10_000L, 9_000L
+        ))
+    }
+
+    @Test
+    fun dongdaegu_transfer_resumes_the_direction_specific_planned_leg() {
+        val commuteIndex = requireNotNull(RouteCatalog.dongdaeguTransferPlannedLegIndex(JourneyId.COMMUTE))
+        val returnIndex = requireNotNull(RouteCatalog.dongdaeguTransferPlannedLegIndex(JourneyId.RETURN))
+
+        assertEquals(TransportKind.SUBWAY, RouteCatalog.commute.legs[commuteIndex].kind)
+        assertEquals(TransportKind.KTX, RouteCatalog.returning.legs[returnIndex].kind)
+        assertEquals("대전역", RouteCatalog.commute.legs[requireNotNull(
+            RouteCatalog.commute.legs.indexOfFirst { it.kind == TransportKind.KTX }.takeIf { it >= 0 }
+        )].origin)
     }
 }

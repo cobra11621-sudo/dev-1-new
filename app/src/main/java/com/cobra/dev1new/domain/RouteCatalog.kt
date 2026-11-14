@@ -256,6 +256,22 @@ object RouteCatalog {
         JourneyId.RETURN -> GeoPoint(35.8724067, 128.7335650) // 안심역 1번 출구
         else -> null
     }
+
+    /** Outdoor hub between the Dongdaegu subway exit and the KTX platforms. */
+    fun dongdaeguTransferPoint(): GeoPoint = ktxCommutePoints.last()
+
+    /** KTX-side outdoor position at Daejeon Station for an explicit commute recovery. */
+    fun daejeonKtxBoardingPoint(): GeoPoint = ktxCommutePoints.first()
+
+    /**
+     * A manual recovery in the Dongdaegu transfer area resumes the next
+     * planned transport for the selected direction, never an onboard state.
+     */
+    fun dongdaeguTransferPlannedLegIndex(journeyId: JourneyId): Int? = when (journeyId) {
+        JourneyId.COMMUTE -> commute.legs.indexOfFirst { it.id == "commute_subway" }.takeIf { it >= 0 }
+        JourneyId.RETURN -> returning.legs.indexOfFirst { it.id == "return_ktx" }.takeIf { it >= 0 }
+        else -> null
+    }
     fun initialManualPlanLeg(journey: JourneyDefinition): TransportLeg = journey.legs.first()
     fun allStops(journeyId: JourneyId, legIndex: Int): List<String> =
         journey(journeyId).legs[legIndex].stops
