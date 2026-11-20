@@ -25,6 +25,7 @@ import com.cobra.dev1new.domain.BusBoardingProbe
 import com.cobra.dev1new.domain.BoardingDiagnostic
 import com.cobra.dev1new.domain.GeoFix
 import com.cobra.dev1new.domain.JourneyId
+import com.cobra.dev1new.domain.KtxBoardingProbe
 import com.cobra.dev1new.domain.KtxScheduleResolver
 import com.cobra.dev1new.domain.LegPhase
 import com.cobra.dev1new.domain.RouteCatalog
@@ -68,6 +69,7 @@ class TransitTrackingService : Service() {
     private var busProbe: BusBoardingProbe? = null
     private var busDestinationFixCount = 0
     private var ktxDestinationFixCount = 0
+    private var ktxBoardingProbe: KtxBoardingProbe? = null
     private var lastBusFetchAt = 0L
     private var busFetchInFlight = false
     private var lastSubwayFetchAt = 0L
@@ -782,13 +784,28 @@ class TransitTrackingService : Service() {
             val arrival = schedule?.let { configuredSchedule ->
                 departure?.let { KtxScheduleResolver.arrivalEpochMillis(configuredSchedule, it) }
             }
-            if (TransitGpsRules.isKtxBoardingFix(fix, projection.distanceMeters, now, departure, arrival)) {
+            val baseKtxBoardingCondition = TransitGpsRules.isKtxBoardingFix(
+                fix, projection.distanceMeters, now, departure, arrival
+            )
+            if (!baseKtxBoardingCondition) {
+                ktxBoardingProbe = null
+                return
+            }
+            val probe = ktxBoardingProbe?.takeIf { it.journeyId == progress.journeyId }
+            val sustainedSpeed = probe != null && TransitGpsRules.confirmsKtxBoardingSpeed(probe, fix)
+            val recordedPointConfirmation = TransitGpsRules.isNearInteriorKtxRecordedPoint(fix, leg.routePoints)
+            if (sustainedSpeed || recordedPointConfirmation) {
+                ktxBoardingProbe = null
                 if (repository.autoBoard(now) is com.cobra.dev1new.domain.TransitionResult.Applied) {
-                    postEvent("KTX 탑승 확인", "출발~도착 예정 시각 사이 · KTX 경로 2km 이내 · 시속 20km 이상 · 자동 탑승 처리")
+                    val confirmation = if (recordedPointConfirmation) "기록 경로점 50m 이내" else "5초 이상 간격 속도 2회 확인"
+                    postEvent("KTX 탑승 확인", "출발~도착 예정 시각 사이 · KTX 경로 2km 이내 · 시속 20km 이상 · $confirmation · 자동 탑승 처리")
                 }
+            } else if (probe == null || TransitGpsRules.shouldRestartKtxBoardingProbe(probe, fix)) {
+                ktxBoardingProbe = KtxBoardingProbe(progress.journeyId, fix)
             }
             return
         }
+        ktxBoardingProbe = null
         if (progress.phase != LegPhase.ONBOARD) return
         val schedule = snapshot.ktxSchedules[progress.journeyId] ?: return
         val departure = KtxScheduleResolver.departureEpochMillis(schedule, progress.plannedAtEpochMillis ?: now)

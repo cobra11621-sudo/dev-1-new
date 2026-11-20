@@ -93,6 +93,7 @@ object RouteGeometry {
 }
 
 data class BusBoardingProbe(val firstFix: GeoFix, val firstProjection: RouteProjection)
+data class KtxBoardingProbe(val journeyId: JourneyId, val firstFix: GeoFix)
 
 object TransitGpsRules {
     private const val BUS_MAX_ACCURACY_METERS = 80.0f
@@ -197,6 +198,32 @@ object TransitGpsRules {
             distanceFromKtxRouteMeters <= KTX_BOARDING_ROUTE_RADIUS_METERS &&
             fix.speedKmh >= 20.0f
 
+    /**
+     * One bad station-side speed reading must not board KTX.  The next
+     * qualifying reading is accepted only after a normal location interval,
+     * and the candidate expires after a short GPS gap.
+     */
+    fun confirmsKtxBoardingSpeed(probe: KtxBoardingProbe, fix: GeoFix): Boolean {
+        val elapsed = fix.elapsedRealtimeMillis - probe.firstFix.elapsedRealtimeMillis
+        return elapsed in KTX_BOARDING_CONFIRM_MIN_MILLIS..KTX_BOARDING_CONFIRM_MAX_MILLIS &&
+            probe.firstFix.speedKmh >= KTX_BOARDING_MIN_SPEED_KMH &&
+            fix.speedKmh >= KTX_BOARDING_MIN_SPEED_KMH
+    }
+
+    fun shouldRestartKtxBoardingProbe(probe: KtxBoardingProbe, fix: GeoFix): Boolean =
+        fix.elapsedRealtimeMillis - probe.firstFix.elapsedRealtimeMillis > KTX_BOARDING_CONFIRM_MAX_MILLIS
+
+    /**
+     * A recorded point after the departure-station point is a stronger signal
+     * than a single speed reading. The first point is intentionally excluded:
+     * it can be reached while waiting on the platform.
+     */
+    fun isNearInteriorKtxRecordedPoint(fix: GeoFix, routePoints: List<GeoPoint>): Boolean =
+        routePoints.drop(1).any { point ->
+            RouteGeometry.distance(fix.latitude, fix.longitude, point.latitude, point.longitude) <=
+                KTX_RECORDED_POINT_RADIUS_METERS
+        }
+
     fun isKtxArrivalFix(
         fix: GeoFix,
         destination: GeoPoint
@@ -245,4 +272,8 @@ object TransitGpsRules {
     }
 
     private const val KTX_BOARDING_ROUTE_RADIUS_METERS = 2_000.0
+    private const val KTX_BOARDING_MIN_SPEED_KMH = 20.0f
+    private const val KTX_BOARDING_CONFIRM_MIN_MILLIS = 5_000L
+    private const val KTX_BOARDING_CONFIRM_MAX_MILLIS = 20_000L
+    private const val KTX_RECORDED_POINT_RADIUS_METERS = 50.0
 }

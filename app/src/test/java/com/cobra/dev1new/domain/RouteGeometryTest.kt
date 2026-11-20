@@ -118,6 +118,21 @@ class RouteGeometryTest {
     }
 
     @Test
+    fun ktxBoardingNeedsTwoFastFixesOrAnInteriorRecordedPoint() {
+        val first = GeoFix(36.0, 127.0, null, 21f, 10_000L)
+        val probe = KtxBoardingProbe(JourneyId.COMMUTE, first)
+        val route = listOf(GeoPoint(36.0, 127.0), GeoPoint(36.0, 127.01))
+
+        assertFalse(TransitGpsRules.confirmsKtxBoardingSpeed(probe, first.copy(elapsedRealtimeMillis = 14_999L)))
+        assertTrue(TransitGpsRules.confirmsKtxBoardingSpeed(probe, first.copy(elapsedRealtimeMillis = 15_000L)))
+        assertFalse(TransitGpsRules.confirmsKtxBoardingSpeed(probe, first.copy(speedKmh = 19f, elapsedRealtimeMillis = 15_000L)))
+        assertTrue(TransitGpsRules.shouldRestartKtxBoardingProbe(probe, first.copy(elapsedRealtimeMillis = 30_001L)))
+
+        assertFalse(TransitGpsRules.isNearInteriorKtxRecordedPoint(first, route))
+        assertTrue(TransitGpsRules.isNearInteriorKtxRecordedPoint(first.copy(longitude = 127.01), route))
+    }
+
+    @Test
     fun dongdaegu_transfer_recovery_requires_an_accurate_area_and_directional_ktx_time() {
         val transfer = RouteCatalog.dongdaeguTransferPoint()
         val fix = GeoFix(transfer.latitude, transfer.longitude, 80f, 25f, 1L)
